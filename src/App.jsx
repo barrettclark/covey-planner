@@ -1,4 +1,119 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
+
+// ─── Dropbox PKCE OAuth ───────────────────────────────────────────────────────
+
+const DBX_APP_KEY    = "fc5cp3nk989ym1q";
+const DBX_FILE_PATH  = "/Apps/Obsidian/v1/todo.todotxt";
+const DBX_REDIRECT   = window.location.origin + window.location.pathname;
+const DBX_AUTH_URL   = "https://www.dropbox.com/oauth2/authorize";
+const DBX_TOKEN_URL  = "https://api.dropboxapi.com/oauth2/token";
+const DBX_UPLOAD_URL = "https://content.dropboxapi.com/2/files/upload";
+const DBX_DOWNLOAD_URL = "https://content.dropboxapi.com/2/files/download";
+
+function b64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function pkceChallenge() {
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
+  const digest   = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return { verifier, challenge: b64url(digest) };
+}
+
+async function startDropboxAuth() {
+  const { verifier, challenge } = await pkceChallenge();
+  sessionStorage.setItem("dbx_verifier", verifier);
+  const params = new URLSearchParams({
+    client_id:             DBX_APP_KEY,
+    response_type:         "code",
+    redirect_uri:          DBX_REDIRECT,
+    code_challenge:        challenge,
+    code_challenge_method: "S256",
+    token_access_type:     "offline",
+  });
+  window.location.href = `${DBX_AUTH_URL}?${params}`;
+}
+
+async function exchangeCode(code) {
+  const verifier = sessionStorage.getItem("dbx_verifier");
+  sessionStorage.removeItem("dbx_verifier");
+  const res = await fetch(DBX_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code, grant_type: "authorization_code",
+      client_id: DBX_APP_KEY, redirect_uri: DBX_REDIRECT,
+      code_verifier: verifier,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function refreshToken(refresh_token) {
+  const res = await fetch(DBX_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token, client_id: DBX_APP_KEY,
+    }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function loadTokens() {
+  try { return JSON.parse(localStorage.getItem("dbx_tokens") || "null"); } catch { return null; }
+}
+
+function saveTokens(tokens) {
+  localStorage.setItem("dbx_tokens", JSON.stringify(tokens));
+}
+
+async function getAccessToken() {
+  let tokens = loadTokens();
+  if (!tokens) return null;
+  // Refresh if expires within 60s
+  if (tokens.expires_at && Date.now() > tokens.expires_at - 60000) {
+    try {
+      const fresh = await refreshToken(tokens.refresh_token);
+      tokens = { ...tokens, access_token: fresh.access_token,
+        expires_at: Date.now() + (fresh.expires_in || 14400) * 1000 };
+      saveTokens(tokens);
+    } catch { return null; }
+  }
+  return tokens.access_token;
+}
+
+async function dbxDownload(accessToken) {
+  const res = await fetch(DBX_DOWNLOAD_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Dropbox-API-Arg": JSON.stringify({ path: DBX_FILE_PATH }),
+    },
+  });
+  if (!res.ok) throw new Error(`Dropbox download failed: ${res.status}`);
+  return res.text();
+}
+
+async function dbxUpload(accessToken, content) {
+  const res = await fetch(DBX_UPLOAD_URL, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Dropbox-API-Arg": JSON.stringify({
+        path: DBX_FILE_PATH, mode: "overwrite", autorename: false, mute: true,
+      }),
+      "Content-Type": "application/octet-stream",
+    },
+    body: content,
+  });
+  if (!res.ok) throw new Error(`Dropbox upload failed: ${res.status}`);
+  return res.json();
+}
 
 // ─── todo.txt parser ──────────────────────────────────────────────────────────
 
@@ -158,6 +273,8 @@ export default function App() {
   const [addingFor, setAddingFor] = useState(null);
   const [form, setForm] = useState({ text:"", due:"", project:"", context:"", rec:"" });
   const [showExport, setShowExport] = useState(false);
+  const [dbxConnected, setDbxConnected] = useState(!!loadTokens());
+  const [dbxStatus, setDbxStatus] = useState(null); // "loading"|"saving"|"saved"|"error"|string
   const [fileHandle, setFileHandle] = useState(null);
   const [fileName, setFileName] = useState(null);
   const [saveMsg, setSaveMsg] = useState(null);
@@ -172,7 +289,77 @@ export default function App() {
   const allCtx = [...new Set(tasks.flatMap(t => t.contexts))].sort();
   const allProj = [...new Set(tasks.flatMap(t => t.projects))].sort();
 
-  // ── File I/O ───────────────────────────────────────────────────────────────
+  // ── Dropbox OAuth callback handling ───────────────────────────────────────
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    if (!code) return;
+    // Clean the URL immediately so a refresh doesn't re-trigger
+    window.history.replaceState({}, "", window.location.pathname);
+    exchangeCode(code).then(tokens => {
+      saveTokens({
+        access_token:  tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_at:    Date.now() + (tokens.expires_in || 14400) * 1000,
+      });
+      setDbxConnected(true);
+      loadFromDropbox();
+    }).catch(e => {
+      setDbxStatus("error");
+      console.error("Dropbox auth error:", e);
+    });
+  }, []);
+
+  // ── Auto-load from Dropbox on connect ─────────────────────────────────────
+
+  useEffect(() => {
+    if (dbxConnected) loadFromDropbox();
+  }, [dbxConnected]);
+
+  async function loadFromDropbox() {
+    setDbxStatus("loading");
+    try {
+      const token = await getAccessToken();
+      if (!token) { setDbxConnected(false); setDbxStatus(null); return; }
+      const text = await dbxDownload(token);
+      const parsed = text.split("\n").filter(l => l.trim())
+        .map((raw, i) => parseTodoTxt(raw, i + 1));
+      setTasks(parsed);
+      nextId.current = parsed.length + 100;
+      setDbxStatus("saved");
+      flash("✓ Loaded from Dropbox");
+    } catch(e) {
+      setDbxStatus("error");
+      flash("⚠ Dropbox load failed");
+      console.error(e);
+    }
+  }
+
+  const saveToDropbox = useCallback(async (taskList) => {
+    const token = await getAccessToken();
+    if (!token) return;
+    setDbxStatus("saving");
+    try {
+      const txt = taskList.map(taskToTxt).join("\n") + "\n";
+      await dbxUpload(token, txt);
+      setDbxStatus("saved");
+    } catch(e) {
+      setDbxStatus("error");
+      console.error("Dropbox save error:", e);
+    }
+  }, []);
+
+  // Auto-save to Dropbox whenever tasks change (debounced 1.5s)
+  const saveTimer = useRef(null);
+  useEffect(() => {
+    if (!dbxConnected) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => saveToDropbox(tasks), 1500);
+    return () => clearTimeout(saveTimer.current);
+  }, [tasks, dbxConnected]);
+
+  // ── Local file fallback (used when not connected to Dropbox) ──────────────
 
   async function openFile() {
     try {
@@ -202,8 +389,14 @@ export default function App() {
     } else {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(new Blob([txt], { type: "text/plain" }));
-      a.download = "todo.txt"; a.click();
+      a.download = "todo.todotxt"; a.click();
     }
+  }
+
+  function disconnectDropbox() {
+    localStorage.removeItem("dbx_tokens");
+    setDbxConnected(false);
+    setDbxStatus(null);
   }
 
   function flash(msg) { setSaveMsg(msg); setTimeout(() => setSaveMsg(null), 2500); }
@@ -366,6 +559,7 @@ export default function App() {
 
   return (
     <div style={{ fontFamily:"'Palatino Linotype','Book Antiqua',Palatino,Georgia,serif", minHeight:"100vh", background:"#f2ede4", color:"#1e1810" }}>
+      <style>{`@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }`}</style>
 
       {/* Header */}
       <div style={{ background:"#1e1810", color:"#f2ede4" }}>
@@ -377,10 +571,26 @@ export default function App() {
               <div style={{ fontSize:12, color:"#5a4030", marginTop:2 }}>{todayLabel}</div>
             </div>
             <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
-              {saveMsg && <span style={{ fontSize:11, color:"#7ec8a0", letterSpacing:"0.05em" }}>{saveMsg}</span>}
-              {fileName && <span style={{ fontSize:11, color:"#6a5040", fontFamily:"monospace" }}>{fileName}</span>}
-              <HBtn onClick={openFile}>📂 Open</HBtn>
-              <HBtn onClick={saveFile}>{fileHandle ? "💾 Save" : "⬇ Download"}</HBtn>
+              {/* Dropbox status indicator */}
+              {dbxConnected ? (
+                <span style={{ display:"flex", alignItems:"center", gap:5, fontSize:11,
+                  color: dbxStatus === "error" ? "#e07070" : dbxStatus === "saving" ? "#e8c97a" : "#7ec8a0" }}>
+                  <span style={{ width:7, height:7, borderRadius:"50%", display:"inline-block",
+                    background: dbxStatus === "error" ? "#e07070" : dbxStatus === "saving" ? "#e8c97a" : "#7ec8a0",
+                    animation: dbxStatus === "saving" ? "pulse 1s infinite" : "none" }} />
+                  {dbxStatus === "loading" ? "Loading…" : dbxStatus === "saving" ? "Saving…" : dbxStatus === "error" ? "Sync error" : "Dropbox live"}
+                </span>
+              ) : (
+                saveMsg && <span style={{ fontSize:11, color:"#7ec8a0" }}>{saveMsg}</span>
+              )}
+              {dbxConnected
+                ? <HBtn onClick={disconnectDropbox}>⏏ Disconnect</HBtn>
+                : <>
+                    <HBtn onClick={startDropboxAuth}>🔗 Connect Dropbox</HBtn>
+                    <HBtn onClick={openFile}>📂 Open</HBtn>
+                    <HBtn onClick={saveFile}>{fileHandle ? "💾 Save" : "⬇ Download"}</HBtn>
+                  </>
+              }
               <HBtn onClick={() => setShowDone(!showDone)}>{showDone ? "Hide Done" : `Done (${tasks.filter(t=>t.done).length})`}</HBtn>
               <HBtn onClick={() => setShowExport(!showExport)}>Export</HBtn>
             </div>
