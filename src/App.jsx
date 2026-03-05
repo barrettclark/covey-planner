@@ -173,7 +173,7 @@ export default function App() {
   async function openFile() {
     try {
       const [handle] = await window.showOpenFilePicker({
-        types: [{ description: "todo.txt", accept: { "text/plain": [".txt"] } }],
+        types: [{ description: "todo.txt / todo.todotxt", accept: { "text/plain": [".txt", ".todotxt"] } }],
       });
       const file = await handle.getFile();
       const text = await file.text();
