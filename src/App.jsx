@@ -632,16 +632,18 @@ export default function App() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ fontFamily:"'Palatino Linotype','Book Antiqua',Palatino,Georgia,serif", minHeight:"100vh", background:"#f2ede4", color:"#1e1810" }}>
+    <div style={{ fontFamily:"'Palatino Linotype','Book Antiqua',Palatino,Georgia,serif", minHeight:"100vh", width:"100%", background:"#f2ede4", color:"#1e1810", overflowX:"hidden" }}>
       <style>{`
+        * { box-sizing: border-box; }
+        body, html { margin: 0; padding: 0; width: 100%; }
         @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
         @keyframes fadein { from { opacity:0 } to { opacity:1 } }
-        .app-layout { display: flex; min-height: 100vh; align-items: stretch; }
-        .task-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .app-layout { display: flex; min-height: 100vh; width: 100vw; align-items: stretch; }
+        .task-col { flex: 1; min-width: 0; overflow-x: hidden; }
         .task-col-inner { width: 100%; padding-left: 24px; padding-right: 24px; box-sizing: border-box; }
         .photo-col { display: none; }
         @media (min-width: 1100px) {
-          .photo-col { display: flex; flex-direction: column; width: 340px; flex-shrink: 0;
+          .photo-col { display: flex; flex-direction: column; width: 340px; min-width: 340px; flex-shrink: 0;
             position: sticky; top: 0; height: 100vh; overflow: hidden; }
         }
         @media (max-width: 639px) {
