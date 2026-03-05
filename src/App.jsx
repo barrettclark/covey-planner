@@ -986,6 +986,7 @@ export default function App() {
           </div>
         </div>
 
+      </div>{/* end task-col-inner */}
       </div>{/* end task-col */}
 
         {/* Right: NASA APOD photo panel */}
