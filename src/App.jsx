@@ -273,6 +273,7 @@ export default function App() {
   const [addingFor, setAddingFor] = useState(null);
   const [form, setForm] = useState({ text:"", due:"", project:"", context:"", rec:"" });
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const [showHelp, setShowHelp] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [dbxConnected, setDbxConnected] = useState(!!loadTokens());
   const [dbxStatus, setDbxStatus] = useState(null); // "loading"|"saving"|"saved"|"error"|string
@@ -671,7 +672,19 @@ export default function App() {
             <div className="task-col-inner" style={{ padding:"20px 24px 0" }}>
               <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", flexWrap:"wrap", gap:12, paddingBottom:14 }}>
                 <div>
-                  <div style={{ fontSize:10, letterSpacing:"0.25em", textTransform:"uppercase", color:"#6a5040", marginBottom:3 }}>Franklin Covey</div>
+                  <div style={{ fontSize:10, letterSpacing:"0.25em", textTransform:"uppercase", color:"#6a5040", marginBottom:3, display:"flex", alignItems:"center", gap:6 }}>
+                    <a href="https://blog.franklinplanner.com/wp-content/uploads/sites/2/2015/01/1412030-GO-Community-Spring-2015-Final.pdf"
+                      target="_blank" rel="noreferrer"
+                      style={{ color:"#8a7060", textDecoration:"none", borderBottom:"1px solid #3a2e20", letterSpacing:"0.25em" }}>
+                      Franklin Covey
+                    </a>
+                    <span style={{ color:"#3a2e20" }}>+</span>
+                    <a href="https://github.com/todotxt/todo.txt"
+                      target="_blank" rel="noreferrer"
+                      style={{ color:"#8a7060", textDecoration:"none", borderBottom:"1px solid #3a2e20", letterSpacing:"0.25em" }}>
+                      todo.txt
+                    </a>
+                  </div>
                   <h1 style={{ margin:0, fontSize:24, fontWeight:"normal" }}>Daily Task Planner</h1>
                   <div style={{ fontSize:12, color:"#5a4030", marginTop:2 }}>{todayLabel}</div>
                 </div>
@@ -697,6 +710,12 @@ export default function App() {
                   }
                   <HBtn onClick={() => setShowDone(!showDone)}>{showDone ? "Hide Done" : `Done (${tasks.filter(t=>t.done).length})`}</HBtn>
                   <HBtn onClick={() => setShowExport(!showExport)}>View todo.txt</HBtn>
+                  <button onClick={() => setShowHelp(true)} title="Help" style={{
+                    background:"none", border:"1px solid #3a2e20", borderRadius:"50%",
+                    color:"#8a7060", cursor:"pointer", width:26, height:26, fontSize:13,
+                    fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center",
+                    flexShrink:0, lineHeight:1
+                  }}>?</button>
                 </div>
               </div>
               {/* Tabs */}
@@ -1033,6 +1052,147 @@ export default function App() {
         </div>
 
       </div>{/* end app-layout */}
+
+      {/* ── Help Modal ── */}
+      {showHelp && (
+        <div onClick={() => setShowHelp(false)} style={{
+          position:"fixed", inset:0, background:"rgba(0,0,0,0.55)", zIndex:200,
+          display:"flex", alignItems:"center", justifyContent:"center", padding:16
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background:"#fdf6ed", borderRadius:10, maxWidth:620, width:"100%",
+            maxHeight:"88vh", overflowY:"auto", boxShadow:"0 16px 48px rgba(0,0,0,0.35)",
+            fontFamily:"'Palatino Linotype','Book Antiqua',Palatino,Georgia,serif"
+          }}>
+            {/* Modal header */}
+            <div style={{ background:"#1e1810", color:"#f2ede4", padding:"18px 24px",
+              borderRadius:"10px 10px 0 0", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <div>
+                <div style={{ fontSize:10, letterSpacing:"0.2em", textTransform:"uppercase", color:"#6a5040", marginBottom:2 }}>Franklin Covey</div>
+                <div style={{ fontSize:18, fontWeight:"normal" }}>Daily Task Planner — Help</div>
+              </div>
+              <button onClick={() => setShowHelp(false)} style={{
+                background:"none", border:"none", color:"#6a5040", fontSize:22,
+                cursor:"pointer", lineHeight:1, padding:"0 4px"
+              }}>✕</button>
+            </div>
+
+            <div style={{ padding:"24px 28px 28px" }}>
+
+              {/* Priority system */}
+              <HelpSection title="Priority System">
+                <p style={hp}>Tasks are grouped into four priority levels, following the Franklin Covey method:</p>
+                <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:10 }}>
+                  {[
+                    { p:"A", color:"#b33020", bg:"#fdf0ee", border:"#ddb5b0", desc:"Vital — must be done today. These are your critical, high-stakes tasks." },
+                    { p:"B", color:"#b07010", bg:"#fdf6ed", border:"#ddc898", desc:"Important — should be done today, but won't cause a crisis if deferred." },
+                    { p:"C", color:"#2a7048", bg:"#eef7f2", border:"#9ecfb5", desc:"Nice to Do — worth doing, but low consequence if skipped." },
+                    { p:"R", color:"#3558b0", bg:"#eef2fb", border:"#9db5e0", desc:"Recurring — repeating tasks stored with a rec: tag. They surface automatically as A (due today) or B (due tomorrow) and stay hidden until then." },
+                  ].map(({ p, color, bg, border, desc }) => (
+                    <div key={p} style={{ display:"flex", gap:12, alignItems:"flex-start",
+                      background:bg, border:`1px solid ${border}`, borderRadius:6, padding:"10px 14px" }}>
+                      <div style={{ width:24, height:24, borderRadius:"50%", background:color,
+                        color:"#fff", display:"flex", alignItems:"center", justifyContent:"center",
+                        fontSize:12, fontWeight:"bold", flexShrink:0, marginTop:1 }}>{p}</div>
+                      <div style={{ fontSize:13, color:"#2a1e10", lineHeight:1.5 }}>{desc}</div>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ ...hp, marginTop:10 }}>Within each group, tasks are numbered (A1, A2, A3…) by their order. Drag to reorder.</p>
+              </HelpSection>
+
+              <HelpDivider />
+
+              {/* Drag to reprioritize */}
+              <HelpSection title="Drag to Reprioritize">
+                <p style={hp}>Every task has a <Code>⠿</Code> drag handle on the left. You can:</p>
+                <ul style={ul}>
+                  <li style={li}><strong>Reorder within a group</strong> — drag a task up or down to change its number (A1 → A2 etc.)</li>
+                  <li style={li}><strong>Move between groups</strong> — drag a task onto a different group's header (the header highlights with a dashed outline) or drop it between tasks in another group. The priority letter updates automatically.</li>
+                  <li style={li}><strong>Recurring tasks</strong> — dragging an R task to a new group opens a reschedule prompt. Enter a new due date to shift the entire recurrence chain forward from that date.</li>
+                </ul>
+              </HelpSection>
+
+              <HelpDivider />
+
+              {/* todo.txt format */}
+              <HelpSection title="todo.txt Format">
+                <p style={hp}>This app reads and writes the standard todo.txt format, compatible with SwiftDo, vim, and the Obsidian todo.txt plugin. Each task is one line:</p>
+                <div style={{ background:"#1e1810", borderRadius:6, padding:"12px 16px", margin:"12px 0" }}>
+                  <pre style={{ margin:0, fontSize:12, color:"#c8b89a", lineHeight:2, fontFamily:"monospace", whiteSpace:"pre-wrap" }}>{
+`(A) Task description +Project @context due:2026-03-07
+(B) Another task +Work @computer
+(R) Weekly standup due:2026-03-07 rec:1w +Work @computer
+x 2026-03-05 (A) Completed task`
+                  }</pre>
+                </div>
+                <ul style={ul}>
+                  <li style={li}><Code>(A)</Code> — priority letter in parentheses at the start</li>
+                  <li style={li}><Code>+Project</Code> — project tag (no spaces)</li>
+                  <li style={li}><Code>@context</Code> — context tag, e.g. @phone, @computer, @home</li>
+                  <li style={li}><Code>due:YYYY-MM-DD</Code> — due date</li>
+                  <li style={li}><Code>rec:1w</Code> — recurrence (see below)</li>
+                  <li style={li}><Code>x 2026-03-05</Code> — completed tasks start with x and a date</li>
+                </ul>
+                <p style={hp}>
+                  <a href="https://github.com/todotxt/todo.txt" target="_blank" rel="noreferrer"
+                    style={{ color:"#3558b0", textDecoration:"none", borderBottom:"1px solid #9db5e0" }}>
+                    Full todo.txt specification on GitHub ↗
+                  </a>
+                </p>
+              </HelpSection>
+
+              <HelpDivider />
+
+              {/* Recurrence */}
+              <HelpSection title="Recurring Task Syntax">
+                <p style={hp}>Add a <Code>rec:</Code> tag to any task to make it repeat. When you check it off, the next occurrence is created automatically with an advanced due date.</p>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 20px", marginTop:10 }}>
+                  {[
+                    ["rec:1d", "Every day"],
+                    ["rec:2d", "Every 2 days"],
+                    ["rec:1w", "Every week"],
+                    ["rec:2w", "Every 2 weeks"],
+                    ["rec:1m", "Every month"],
+                    ["rec:3m", "Every 3 months"],
+                    ["rec:1y", "Every year"],
+                    ["rec:1wd", "Every weekday"],
+                  ].map(([tag, desc]) => (
+                    <div key={tag} style={{ display:"flex", gap:8, alignItems:"center", padding:"5px 0",
+                      borderBottom:"1px solid #e8e0d0" }}>
+                      <Code>{tag}</Code>
+                      <span style={{ fontSize:12, color:"#5a4a38" }}>{desc}</span>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ ...hp, marginTop:12 }}>Recurring tasks use <Code>(R)</Code> priority in the file. The planner promotes them to <strong>A</strong> on their due date and <strong>B</strong> the day before — your other todo.txt apps always see <Code>(R)</Code>.</p>
+              </HelpSection>
+
+              <HelpDivider />
+
+              {/* Dropbox */}
+              <HelpSection title="Dropbox Setup & Reconnecting">
+                <ul style={ul}>
+                  <li style={li}>Click <strong>🔗 Connect Dropbox</strong> to authorize. You'll be redirected to Dropbox and back — this only happens once.</li>
+                  <li style={li}>Your file at <Code>/Apps/Obsidian/v1/todo.todotxt</Code> loads automatically on every visit and saves silently after every change (1.5s debounce).</li>
+                  <li style={li}>The status dot in the header shows: <span style={{ color:"#7ec8a0" }}>● live</span>, <span style={{ color:"#e8c97a" }}>● saving</span>, <span style={{ color:"#e07070" }}>● error</span>.</li>
+                  <li style={li}>If you get a sync error, click <strong>⏏ Disconnect</strong> then <strong>🔗 Connect Dropbox</strong> again to re-authorize.</li>
+                  <li style={li}>Your auth token is stored in your browser's localStorage — clearing browser data will require reconnecting.</li>
+                </ul>
+              </HelpSection>
+
+            </div>
+
+            <div style={{ padding:"14px 28px 20px", borderTop:"1px solid #e8e0d0", textAlign:"center" }}>
+              <button onClick={() => setShowHelp(false)} style={{
+                background:"#1e1810", color:"#c8b89a", border:"none", borderRadius:4,
+                padding:"8px 24px", cursor:"pointer", fontSize:13, fontFamily:"inherit"
+              }}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -1219,3 +1379,32 @@ const mini = {
   fontSize:12, padding:"4px 8px", border:"1px solid #ddd",
   borderRadius:4, fontFamily:"monospace", background:"#fff"
 };
+
+// ─── Help modal helpers ───────────────────────────────────────────────────────
+
+function HelpSection({ title, children }) {
+  return (
+    <div style={{ marginBottom:4 }}>
+      <div style={{ fontSize:13, fontWeight:"bold", letterSpacing:"0.05em", textTransform:"uppercase",
+        color:"#1e1810", marginBottom:10, paddingBottom:4, borderBottom:"2px solid #e8e0d0" }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function HelpDivider() {
+  return <div style={{ margin:"20px 0" }} />;
+}
+
+function Code({ children }) {
+  return (
+    <code style={{ background:"#e8e0d0", borderRadius:3, padding:"1px 5px",
+      fontSize:11, fontFamily:"monospace", color:"#3a2810" }}>{children}</code>
+  );
+}
+
+const hp = { fontSize:13, color:"#3a2e20", lineHeight:1.6, margin:"0 0 4px" };
+const ul = { margin:"8px 0 0 0", paddingLeft:20 };
+const li = { fontSize:13, color:"#3a2e20", lineHeight:1.7, marginBottom:2 };
