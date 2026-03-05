@@ -636,85 +636,98 @@ export default function App() {
       <style>{`
         @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
         @keyframes fadein { from { opacity:0 } to { opacity:1 } }
-        .app-body { display: flex; align-items: flex-start; }
-        .task-col { flex: 1; min-width: 0; }
+        .app-layout { display: flex; min-height: 100vh; align-items: stretch; }
+        .task-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+        .task-col-inner { width: 100%; padding-left: 24px; padding-right: 24px; box-sizing: border-box; }
         .photo-col { display: none; }
         @media (min-width: 1100px) {
           .photo-col { display: flex; flex-direction: column; width: 340px; flex-shrink: 0;
             position: sticky; top: 0; height: 100vh; overflow: hidden; }
-          .task-col-inner { max-width: 100% !important; }
+        }
+        @media (max-width: 639px) {
+          .week-grid { display: none !important; }
+          .week-stack { display: flex !important; flex-direction: column; gap: 8px; }
+          .nodue-grid { display: none !important; }
+          .nodue-stack { display: block !important; }
+        }
+        @media (min-width: 640px) {
+          .week-grid { display: grid !important; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+          .week-stack { display: none !important; }
+          .nodue-grid { display: flex !important; }
+          .nodue-stack { display: none !important; }
         }
       `}</style>
 
-      {/* Header */}
-      <div style={{ background:"#1e1810", color:"#f2ede4" }}>
-        <div className="task-col-inner" style={{ maxWidth:920, width:"100%", margin:"0 auto", padding:"20px 24px 0", boxSizing:"border-box" }}>
-          <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", flexWrap:"wrap", gap:12, paddingBottom:14 }}>
-            <div>
-              <div style={{ fontSize:10, letterSpacing:"0.25em", textTransform:"uppercase", color:"#6a5040", marginBottom:3 }}>Franklin Covey</div>
-              <h1 style={{ margin:0, fontSize:24, fontWeight:"normal" }}>Daily Task Planner</h1>
-              <div style={{ fontSize:12, color:"#5a4030", marginTop:2 }}>{todayLabel}</div>
-            </div>
-            <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
-              {/* Dropbox status indicator */}
-              {dbxConnected ? (
-                <span style={{ display:"flex", alignItems:"center", gap:5, fontSize:11,
-                  color: dbxStatus === "error" ? "#e07070" : dbxStatus === "saving" ? "#e8c97a" : "#7ec8a0" }}>
-                  <span style={{ width:7, height:7, borderRadius:"50%", display:"inline-block",
-                    background: dbxStatus === "error" ? "#e07070" : dbxStatus === "saving" ? "#e8c97a" : "#7ec8a0",
-                    animation: dbxStatus === "saving" ? "pulse 1s infinite" : "none" }} />
-                  {dbxStatus === "loading" ? "Loading…" : dbxStatus === "saving" ? "Saving…" : dbxStatus === "error" ? "Sync error" : "Dropbox live"}
-                </span>
-              ) : (
-                saveMsg && <span style={{ fontSize:11, color:"#7ec8a0" }}>{saveMsg}</span>
-              )}
-              {dbxConnected
-                ? <HBtn onClick={disconnectDropbox}>⏏ Disconnect</HBtn>
-                : <>
-                    <HBtn onClick={startDropboxAuth}>🔗 Connect Dropbox</HBtn>
-                    {!isMobile && <HBtn onClick={openFile}>📂 Open</HBtn>}
-                    {!isMobile && <HBtn onClick={saveFile}>{fileHandle ? "💾 Save" : "⬇ Download"}</HBtn>}
-                  </>
-              }
-              <HBtn onClick={() => setShowDone(!showDone)}>{showDone ? "Hide Done" : `Done (${tasks.filter(t=>t.done).length})`}</HBtn>
-              <HBtn onClick={() => setShowExport(!showExport)}>View todo.txt</HBtn>
-            </div>
-          </div>
-          {/* Tabs */}
-          <div style={{ display:"flex", borderTop:"1px solid #2e2010" }}>
-            {[["daily","📋 Today"],["weekly","📅 Week Ahead"]].map(([v,label]) => (
-              <button key={v} onClick={() => setView(v)} style={{
-                background: view===v ? "#f2ede4" : "transparent",
-                color: view===v ? "#1e1810" : "#6a5040",
-                border:"none", cursor:"pointer", padding:"9px 18px",
-                fontSize:11, letterSpacing:"0.1em", textTransform:"uppercase",
-                fontFamily:"inherit", borderRadius:"4px 4px 0 0",
-              }}>{label}</button>
-            ))}
-          </div>
-        </div>
-        {/* Filter bar */}
-        {(allCtx.length > 0 || allProj.length > 0) && (
-          <div style={{ background:"#160e08", borderTop:"1px solid #2e2010" }}>
-            <div className="task-col-inner" style={{ maxWidth:920, width:"100%", margin:"0 auto", padding:"6px 24px", boxSizing:"border-box", display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
-              <span style={{ fontSize:10, color:"#4a3828", letterSpacing:"0.15em", textTransform:"uppercase", marginRight:4 }}>Filter</span>
-              {allCtx.map(c => (
-                <Chip key={c} label={`@${c}`} active={filterCtx===c} color="#7ec8a0" onClick={() => setFilterCtx(filterCtx===c ? null : c)} />
-              ))}
-              {allProj.map(p => (
-                <Chip key={p} label={`+${p}`} active={filterProj===p} color="#7ab8e8" onClick={() => setFilterProj(filterProj===p ? null : p)} />
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
+      {/* ── Full-page two-column layout ── */}
+      <div className="app-layout">
 
-      {/* ── Two-column body ── */}
-      <div className="app-body">
-
-        {/* Left: task list */}
+        {/* ── Left: task column (header + content) ── */}
         <div className="task-col">
-        <div className="task-col-inner" style={{ maxWidth:920, width:"100%", margin:"0 auto", padding:"22px 24px 60px", boxSizing:"border-box" }}>
+
+          {/* Header */}
+          <div style={{ background:"#1e1810", color:"#f2ede4" }}>
+            <div className="task-col-inner" style={{ padding:"20px 24px 0" }}>
+              <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", flexWrap:"wrap", gap:12, paddingBottom:14 }}>
+                <div>
+                  <div style={{ fontSize:10, letterSpacing:"0.25em", textTransform:"uppercase", color:"#6a5040", marginBottom:3 }}>Franklin Covey</div>
+                  <h1 style={{ margin:0, fontSize:24, fontWeight:"normal" }}>Daily Task Planner</h1>
+                  <div style={{ fontSize:12, color:"#5a4030", marginTop:2 }}>{todayLabel}</div>
+                </div>
+                <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
+                  {dbxConnected ? (
+                    <span style={{ display:"flex", alignItems:"center", gap:5, fontSize:11,
+                      color: dbxStatus === "error" ? "#e07070" : dbxStatus === "saving" ? "#e8c97a" : "#7ec8a0" }}>
+                      <span style={{ width:7, height:7, borderRadius:"50%", display:"inline-block",
+                        background: dbxStatus === "error" ? "#e07070" : dbxStatus === "saving" ? "#e8c97a" : "#7ec8a0",
+                        animation: dbxStatus === "saving" ? "pulse 1s infinite" : "none" }} />
+                      {dbxStatus === "loading" ? "Loading…" : dbxStatus === "saving" ? "Saving…" : dbxStatus === "error" ? "Sync error" : "Dropbox live"}
+                    </span>
+                  ) : (
+                    saveMsg && <span style={{ fontSize:11, color:"#7ec8a0" }}>{saveMsg}</span>
+                  )}
+                  {dbxConnected
+                    ? <HBtn onClick={disconnectDropbox}>⏏ Disconnect</HBtn>
+                    : <>
+                        <HBtn onClick={startDropboxAuth}>🔗 Connect Dropbox</HBtn>
+                        {!isMobile && <HBtn onClick={openFile}>📂 Open</HBtn>}
+                        {!isMobile && <HBtn onClick={saveFile}>{fileHandle ? "💾 Save" : "⬇ Download"}</HBtn>}
+                      </>
+                  }
+                  <HBtn onClick={() => setShowDone(!showDone)}>{showDone ? "Hide Done" : `Done (${tasks.filter(t=>t.done).length})`}</HBtn>
+                  <HBtn onClick={() => setShowExport(!showExport)}>View todo.txt</HBtn>
+                </div>
+              </div>
+              {/* Tabs */}
+              <div style={{ display:"flex", borderTop:"1px solid #2e2010" }}>
+                {[["daily","📋 Today"],["weekly","📅 Week Ahead"]].map(([v,label]) => (
+                  <button key={v} onClick={() => setView(v)} style={{
+                    background: view===v ? "#f2ede4" : "transparent",
+                    color: view===v ? "#1e1810" : "#6a5040",
+                    border:"none", cursor:"pointer", padding:"9px 18px",
+                    fontSize:11, letterSpacing:"0.1em", textTransform:"uppercase",
+                    fontFamily:"inherit", borderRadius:"4px 4px 0 0",
+                  }}>{label}</button>
+                ))}
+              </div>
+            </div>
+            {/* Filter bar */}
+            {(allCtx.length > 0 || allProj.length > 0) && (
+              <div style={{ background:"#160e08", borderTop:"1px solid #2e2010" }}>
+                <div className="task-col-inner" style={{ padding:"6px 24px", display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
+                  <span style={{ fontSize:10, color:"#4a3828", letterSpacing:"0.15em", textTransform:"uppercase", marginRight:4 }}>Filter</span>
+                  {allCtx.map(c => (
+                    <Chip key={c} label={`@${c}`} active={filterCtx===c} color="#7ec8a0" onClick={() => setFilterCtx(filterCtx===c ? null : c)} />
+                  ))}
+                  {allProj.map(p => (
+                    <Chip key={p} label={`+${p}`} active={filterProj===p} color="#7ab8e8" onClick={() => setFilterProj(filterProj===p ? null : p)} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Main content */}
+          <div className="task-col-inner" style={{ padding:"22px 24px 60px", flex:1 }}>
 
         {/* Export */}
         {showExport && (
@@ -793,21 +806,6 @@ export default function App() {
         {/* ── WEEKLY VIEW ── */}
         {view === "weekly" && (
           <>
-            <style>{`
-              @media (min-width: 640px) {
-                .week-grid { display: grid !important; grid-template-columns: repeat(7, 1fr); gap: 8px; }
-                .week-stack { display: none !important; }
-                .nodue-grid { display: flex !important; }
-                .nodue-stack { display: none !important; }
-              }
-              @media (max-width: 639px) {
-                .week-grid { display: none !important; }
-                .week-stack { display: flex !important; flex-direction: column; gap: 8px; }
-                .nodue-grid { display: none !important; }
-                .nodue-stack { display: block !important; }
-              }
-            `}</style>
-
             <div style={{ fontSize:12, color:"#8a7060", marginBottom:14 }}>
               Tasks due in the next 7 days. Overdue tasks surface under today.
             </div>
@@ -988,7 +986,6 @@ export default function App() {
           </div>
         </div>
 
-      </div>{/* end inner padding div */}
       </div>{/* end task-col */}
 
         {/* Right: NASA APOD photo panel */}
@@ -1032,7 +1029,7 @@ export default function App() {
           )}
         </div>
 
-      </div>{/* end app-body */}
+      </div>{/* end app-layout */}
     </div>
   );
 }
