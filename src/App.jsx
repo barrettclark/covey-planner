@@ -163,6 +163,10 @@ export default function App() {
   const [saveMsg, setSaveMsg] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
+  const [dragOverGroup, setDragOverGroup] = useState(null);
+  // reschedule prompt: { id, newPriority } — shown when dragging a recurring task cross-group
+  const [reschedulePrompt, setReschedulePrompt] = useState(null);
+  const [rescheduleDate, setRescheduleDate] = useState("");
   const nextId = useRef(500);
 
   const allCtx = [...new Set(tasks.flatMap(t => t.contexts))].sort();
@@ -279,19 +283,79 @@ export default function App() {
     });
   }
 
-  // ── Drag ───────────────────────────────────────────────────────────────────
-
+  // Drop onto a task (reorder within group, or cross-group reprioritize)
   function onDrop(targetId) {
     if (!dragId || dragId === targetId) { setDragId(null); setDragOverId(null); return; }
+    const dragged = tasks.find(t => t.id === dragId);
+    const target  = tasks.find(t => t.id === targetId);
+    if (!dragged || !target) { setDragId(null); setDragOverId(null); return; }
+
+    const draggedEP = effectivePriority(dragged) || dragged.priority || "?";
+    const targetEP  = effectivePriority(target)  || target.priority  || "?";
+
+    if (draggedEP !== targetEP) {
+      // Cross-group drop — reprioritize
+      applyReprioritize(dragged, targetEP, targetId);
+    } else {
+      // Same group — reorder only
+      setTasks(prev => {
+        const arr = [...prev];
+        const fi = arr.findIndex(t => t.id === dragId);
+        const ti = arr.findIndex(t => t.id === targetId);
+        const [moved] = arr.splice(fi, 1);
+        arr.splice(ti, 0, moved);
+        return arr;
+      });
+    }
+    setDragId(null); setDragOverId(null);
+  }
+
+  // Drop onto a group header
+  function onDropGroup(targetPriority) {
+    if (!dragId) { setDragOverGroup(null); return; }
+    const dragged = tasks.find(t => t.id === dragId);
+    if (!dragged) { setDragId(null); setDragOverGroup(null); return; }
+    const draggedEP = effectivePriority(dragged) || dragged.priority || "?";
+    if (draggedEP !== targetPriority) {
+      applyReprioritize(dragged, targetPriority, null);
+    }
+    setDragId(null); setDragOverGroup(null);
+  }
+
+  function applyReprioritize(dragged, newPriority, insertBeforeId) {
+    if (dragged.priority === "R") {
+      // Recurring: show reschedule prompt instead of changing priority
+      setReschedulePrompt({ id: dragged.id, newPriority, insertBeforeId });
+      setRescheduleDate(dragged.dueDate || TODAY);
+    } else {
+      setTasks(prev => {
+        let arr = prev.map(t => t.id === dragged.id ? { ...t, priority: newPriority === "?" ? null : newPriority } : t);
+        if (insertBeforeId) {
+          const fi = arr.findIndex(t => t.id === dragged.id);
+          const ti = arr.findIndex(t => t.id === insertBeforeId);
+          const [moved] = arr.splice(fi, 1);
+          arr.splice(ti, 0, moved);
+        }
+        return arr;
+      });
+    }
+  }
+
+  function confirmReschedule() {
+    if (!reschedulePrompt || !rescheduleDate) return;
+    const { id, insertBeforeId } = reschedulePrompt;
     setTasks(prev => {
-      const arr = [...prev];
-      const fi = arr.findIndex(t => t.id === dragId);
-      const ti = arr.findIndex(t => t.id === targetId);
-      const [moved] = arr.splice(fi, 1);
-      arr.splice(ti, 0, moved);
+      let arr = prev.map(t => t.id === id ? { ...t, dueDate: rescheduleDate } : t);
+      if (insertBeforeId) {
+        const fi = arr.findIndex(t => t.id === id);
+        const ti = arr.findIndex(t => t.id === insertBeforeId);
+        const [moved] = arr.splice(fi, 1);
+        arr.splice(ti, 0, moved);
+      }
       return arr;
     });
-    setDragId(null); setDragOverId(null);
+    setReschedulePrompt(null);
+    setRescheduleDate("");
   }
 
   const exportTxt = tasks.map(taskToTxt).join("\n");
@@ -367,6 +431,31 @@ export default function App() {
         {/* ── DAILY VIEW ── */}
         {view === "daily" && (
           <>
+            {/* Reschedule prompt for recurring tasks dragged cross-group */}
+            {reschedulePrompt && (
+              <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", zIndex:100,
+                display:"flex", alignItems:"center", justifyContent:"center" }}>
+                <div style={{ background:"#fdf6ed", border:"2px solid #ddc898", borderRadius:8,
+                  padding:24, maxWidth:380, width:"90%", boxShadow:"0 8px 32px rgba(0,0,0,0.25)" }}>
+                  <div style={{ fontSize:12, letterSpacing:"0.1em", textTransform:"uppercase",
+                    color:"#b07010", marginBottom:6 }}>Reschedule Recurring Task</div>
+                  <div style={{ fontSize:14, color:"#1e1810", marginBottom:16, lineHeight:1.5 }}>
+                    {tasks.find(t => t.id === reschedulePrompt.id)?.cleanText}
+                  </div>
+                  <div style={{ fontSize:12, color:"#7a5a30", marginBottom:8 }}>
+                    New due date — this reanchors the recurrence chain from this date forward:
+                  </div>
+                  <input type="date" value={rescheduleDate}
+                    onChange={e => setRescheduleDate(e.target.value)}
+                    style={{ ...mini, fontSize:14, padding:"7px 10px", marginBottom:16, display:"block" }} />
+                  <div style={{ display:"flex", gap:8 }}>
+                    <SBtn onClick={confirmReschedule} color="#b07010">Confirm Reschedule</SBtn>
+                    <SBtn onClick={() => { setReschedulePrompt(null); setRescheduleDate(""); }} color="#aaa">Cancel</SBtn>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {["A","B","C","?"].map(p => (
               <Group key={p} priority={p} meta={PMETA[p]} tasks={groups[p]||[]}
                 addingFor={addingFor} setAddingFor={setAddingFor}
@@ -374,7 +463,9 @@ export default function App() {
                 editingId={editingId} setEditingId={setEditingId}
                 onToggle={toggleDone} onDelete={deleteTask} onSaveEdit={saveEdit}
                 dragId={dragId} dragOverId={dragOverId}
-                setDragId={setDragId} setDragOverId={setDragOverId} onDrop={onDrop}
+                dragOverGroup={dragOverGroup} setDragOverGroup={setDragOverGroup}
+                setDragId={setDragId} setDragOverId={setDragOverId}
+                onDrop={onDrop} onDropGroup={onDropGroup}
               />
             ))}
 
@@ -469,10 +560,19 @@ export default function App() {
 
 function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, onAdd,
   editingId, setEditingId, onToggle, onDelete, onSaveEdit,
-  dragId, dragOverId, setDragId, setDragOverId, onDrop }) {
+  dragId, dragOverId, dragOverGroup, setDragOverGroup, setDragId, setDragOverId, onDrop, onDropGroup }) {
+  const headerIsTarget = dragOverGroup === priority;
   return (
     <div style={{ marginBottom:16 }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+      {/* Header — also a drop target */}
+      <div
+        onDragOver={e => { e.preventDefault(); setDragOverGroup(priority); }}
+        onDragLeave={() => setDragOverGroup(null)}
+        onDrop={e => { e.preventDefault(); onDropGroup(priority); }}
+        style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6,
+          borderRadius:6, padding:"4px 6px", transition:"background 0.1s",
+          background: headerIsTarget ? meta.border : "transparent",
+          outline: headerIsTarget ? `2px dashed ${meta.accent}` : "2px dashed transparent" }}>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
           <div style={{ width:22, height:22, borderRadius:"50%", background:meta.accent, color:"#fff",
             display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:"bold", flexShrink:0 }}>
@@ -480,6 +580,9 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
           </div>
           <span style={{ fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase", color:meta.accent }}>{meta.label}</span>
           <span style={{ fontSize:11, color:"#aaa", background:"#e5e0d5", borderRadius:10, padding:"1px 7px" }}>{tasks.length}</span>
+          {headerIsTarget && (
+            <span style={{ fontSize:10, color:meta.accent, fontStyle:"italic" }}>Drop to reprioritize →</span>
+          )}
         </div>
         <button onClick={() => setAddingFor(addingFor === priority ? null : priority)}
           style={{ background:"none", border:"none", cursor:"pointer", fontSize:20, color:meta.accent, lineHeight:1, padding:"0 6px", fontFamily:"inherit" }}>+</button>
