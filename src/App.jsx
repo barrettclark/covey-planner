@@ -563,7 +563,7 @@ export default function App() {
 
       {/* Header */}
       <div style={{ background:"#1e1810", color:"#f2ede4" }}>
-        <div style={{ maxWidth:920, margin:"0 auto", padding:"20px 24px 0" }}>
+        <div style={{ maxWidth:920, width:"100%", margin:"0 auto", padding:"20px 24px 0", boxSizing:"border-box" }}>
           <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", flexWrap:"wrap", gap:12, paddingBottom:14 }}>
             <div>
               <div style={{ fontSize:10, letterSpacing:"0.25em", textTransform:"uppercase", color:"#6a5040", marginBottom:3 }}>Franklin Covey</div>
@@ -611,7 +611,7 @@ export default function App() {
         {/* Filter bar */}
         {(allCtx.length > 0 || allProj.length > 0) && (
           <div style={{ background:"#160e08", borderTop:"1px solid #2e2010" }}>
-            <div style={{ maxWidth:920, margin:"0 auto", padding:"6px 24px", display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
+            <div style={{ maxWidth:920, width:"100%", margin:"0 auto", padding:"6px 24px", boxSizing:"border-box", display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
               <span style={{ fontSize:10, color:"#4a3828", letterSpacing:"0.15em", textTransform:"uppercase", marginRight:4 }}>Filter</span>
               {allCtx.map(c => (
                 <Chip key={c} label={`@${c}`} active={filterCtx===c} color="#7ec8a0" onClick={() => setFilterCtx(filterCtx===c ? null : c)} />
@@ -624,7 +624,7 @@ export default function App() {
         )}
       </div>
 
-      <div style={{ maxWidth:920, margin:"0 auto", padding:"22px 24px 60px" }}>
+      <div style={{ maxWidth:920, width:"100%", margin:"0 auto", padding:"22px 24px 60px", boxSizing:"border-box" }}>
 
         {/* Export */}
         {showExport && (
