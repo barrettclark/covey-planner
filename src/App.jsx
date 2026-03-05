@@ -800,6 +800,7 @@ export default function App() {
                 dragOverGroup={dragOverGroup} setDragOverGroup={setDragOverGroup}
                 setDragId={setDragId} setDragOverId={setDragOverId}
                 onDrop={onDrop} onDropGroup={onDropGroup}
+                allProjects={allProj} allContexts={allCtx}
               />
             ))}
 
@@ -1201,7 +1202,8 @@ x 2026-03-05 (A) Completed task`
 
 function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, onAdd,
   editingId, setEditingId, onToggle, onDelete, onSaveEdit,
-  dragId, dragOverId, dragOverGroup, setDragOverGroup, setDragId, setDragOverId, onDrop, onDropGroup }) {
+  dragId, dragOverId, dragOverGroup, setDragOverGroup, setDragId, setDragOverId, onDrop, onDropGroup,
+  allProjects, allContexts }) {
   const headerIsTarget = dragOverGroup === priority;
   return (
     <div style={{ marginBottom:16 }}>
@@ -1230,21 +1232,11 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
       </div>
 
       {addingFor === priority && (
-        <div style={{ background:meta.bg, border:`1px solid ${meta.border}`, borderRadius:6, padding:12, marginBottom:8 }}>
-          <input value={form.text} onChange={e => setForm(f => ({...f, text:e.target.value}))}
-            onKeyDown={e => { if (e.key==="Enter") onAdd(priority); if (e.key==="Escape") setAddingFor(null); }}
-            placeholder="Task description…" autoFocus
-            style={{ width:"100%", border:`1px solid ${meta.border}`, borderRadius:4, padding:"7px 10px",
-              fontSize:14, fontFamily:"inherit", background:"#fff", boxSizing:"border-box", marginBottom:8 }} />
-          <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
-            <input value={form.due} type="date" onChange={e => setForm(f => ({...f, due:e.target.value}))} style={mini} />
-            <input value={form.project} onChange={e => setForm(f => ({...f, project:e.target.value}))} placeholder="+Project" style={mini} />
-            <input value={form.context} onChange={e => setForm(f => ({...f, context:e.target.value}))} placeholder="@context" style={mini} />
-            <input value={form.rec} onChange={e => setForm(f => ({...f, rec:e.target.value}))} placeholder="rec: e.g. 1w, 1m (optional)" style={mini} />
-            <SBtn onClick={() => onAdd(priority)} color={meta.accent}>Add</SBtn>
-            <SBtn onClick={() => setAddingFor(null)} color="#aaa">Cancel</SBtn>
-          </div>
-        </div>
+        <TaskForm
+          meta={meta} form={form} setForm={setForm}
+          onSubmit={() => onAdd(priority)} onCancel={() => setAddingFor(null)}
+          submitLabel="Add" allProjects={allProjects} allContexts={allContexts}
+        />
       )}
 
       <div style={{ background:meta.bg, border:`1px solid ${meta.border}`, borderRadius:6, overflow:"hidden" }}>
@@ -1252,14 +1244,15 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
           ? <div style={{ padding:"12px 16px", fontSize:13, color:"#ccc", fontStyle:"italic" }}>No tasks</div>
           : tasks.map((task, idx) => (
               <Row key={task.id} task={task} idx={idx} meta={meta}
-                editingId={editingId}
+                editingId={editingId} setEditingId={setEditingId}
                 onToggle={() => onToggle(task.id)} onDelete={() => onDelete(task.id)}
-                onEdit={() => setEditingId(task.id)} onSaveEdit={raw => onSaveEdit(task.id, raw)}
+                onSaveEdit={raw => onSaveEdit(task.id, raw)}
                 onCancelEdit={() => setEditingId(null)}
                 dragId={dragId} dragOverId={dragOverId}
                 onDragStart={() => setDragId(task.id)}
                 onDragOver={() => setDragOverId(task.id)}
                 onDrop={() => onDrop(task.id)}
+                allProjects={allProjects} allContexts={allContexts}
               />
             ))}
       </div>
@@ -1267,14 +1260,127 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
   );
 }
 
+// ─── TaskForm — shared Add / Edit form ────────────────────────────────────────
+
+function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allProjects, allContexts }) {
+  // Multi-select for projects and contexts
+  const toggleTag = (field, val) => {
+    const current = (form[field] || "").split(" ").filter(Boolean);
+    const next = current.includes(val) ? current.filter(v => v !== val) : [...current, val];
+    setForm(f => ({ ...f, [field]: next.join(" ") }));
+  };
+  const selectedProjects = (form.project || "").split(" ").filter(Boolean);
+  const selectedContexts = (form.context || "").split(" ").filter(Boolean);
+
+  return (
+    <div style={{ background: meta?.bg || "#f5f0e8", border:`1px solid ${meta?.border || "#ddd"}`,
+      borderRadius:6, padding:14, marginBottom:8 }}>
+
+      {/* Task description */}
+      <input value={form.text} onChange={e => setForm(f => ({...f, text:e.target.value}))}
+        onKeyDown={e => { if (e.key==="Enter" && !e.shiftKey) onSubmit(); if (e.key==="Escape") onCancel(); }}
+        placeholder="Task description…" autoFocus
+        style={{ width:"100%", border:`1px solid ${meta?.border || "#ddd"}`, borderRadius:4,
+          padding:"7px 10px", fontSize:14, fontFamily:"inherit", background:"#fff",
+          boxSizing:"border-box", marginBottom:10 }} />
+
+      {/* Row 1: due date + rec */}
+      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+        <label style={{ display:"flex", flexDirection:"column", gap:3 }}>
+          <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060" }}>Due date</span>
+          <input value={form.due} type="date" onChange={e => setForm(f => ({...f, due:e.target.value}))} style={mini} />
+        </label>
+        <label style={{ display:"flex", flexDirection:"column", gap:3 }}>
+          <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060" }}>Recurrence</span>
+          <input value={form.rec} onChange={e => setForm(f => ({...f, rec:e.target.value}))}
+            placeholder="e.g. 1w, 1m" style={{ ...mini, width:90 }} />
+        </label>
+      </div>
+
+      {/* Projects */}
+      <div style={{ marginBottom:8 }}>
+        <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060", marginBottom:5 }}>
+          +Projects
+        </div>
+        <div style={{ display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
+          {allProjects.map(p => (
+            <button key={p} onClick={() => toggleTag("project", p)}
+              style={{ fontSize:11, fontFamily:"monospace", padding:"2px 8px", borderRadius:12,
+                border:"1px solid", cursor:"pointer",
+                background: selectedProjects.includes(p) ? "#3558b0" : "#e8f0fe",
+                color: selectedProjects.includes(p) ? "#fff" : "#3558b0",
+                borderColor: selectedProjects.includes(p) ? "#3558b0" : "#b8d0f0" }}>
+              +{p}
+            </button>
+          ))}
+          <input value={form.project} onChange={e => setForm(f => ({...f, project:e.target.value}))}
+            placeholder="New project…"
+            style={{ ...mini, fontFamily:"monospace", width:120, fontSize:11 }} />
+        </div>
+      </div>
+
+      {/* Contexts */}
+      <div style={{ marginBottom:12 }}>
+        <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060", marginBottom:5 }}>
+          @Contexts
+        </div>
+        <div style={{ display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
+          {allContexts.map(c => (
+            <button key={c} onClick={() => toggleTag("context", c)}
+              style={{ fontSize:11, fontFamily:"monospace", padding:"2px 8px", borderRadius:12,
+                border:"1px solid", cursor:"pointer",
+                background: selectedContexts.includes(c) ? "#2a7048" : "#eef7f2",
+                color: selectedContexts.includes(c) ? "#fff" : "#2a7048",
+                borderColor: selectedContexts.includes(c) ? "#2a7048" : "#9ecfb5" }}>
+              @{c}
+            </button>
+          ))}
+          <input value={form.context} onChange={e => setForm(f => ({...f, context:e.target.value}))}
+            placeholder="New context…"
+            style={{ ...mini, fontFamily:"monospace", width:120, fontSize:11 }} />
+        </div>
+      </div>
+
+      <div style={{ display:"flex", gap:6 }}>
+        <SBtn onClick={onSubmit} color={meta?.accent || "#888"}>{submitLabel}</SBtn>
+        <SBtn onClick={onCancel} color="#aaa">Cancel</SBtn>
+      </div>
+    </div>
+  );
+}
+
 // ─── Row ──────────────────────────────────────────────────────────────────────
 
-function Row({ task, idx, meta, editingId, onToggle, onDelete, onEdit, onSaveEdit, onCancelEdit,
-  dragId, dragOverId, onDragStart, onDragOver, onDrop }) {
-  const [editRaw, setEditRaw] = useState("");
+function Row({ task, idx, meta, editingId, setEditingId, onToggle, onDelete, onSaveEdit, onCancelEdit,
+  dragId, dragOverId, onDragStart, onDragOver, onDrop, allProjects, allContexts }) {
   const isEditing = editingId === task.id;
   const overdue = task.dueDate && task.dueDate < TODAY && !task.done;
   const dueToday = task.dueDate === TODAY && !task.done;
+
+  // Edit form state — pre-populated from task
+  const [editForm, setEditForm] = useState(null);
+  useEffect(() => {
+    if (isEditing && !editForm) {
+      setEditForm({
+        text: task.cleanText,
+        due: task.dueDate || "",
+        rec: task.recurrence || "",
+        project: task.projects.join(" "),
+        context: task.contexts.join(" "),
+      });
+    }
+    if (!isEditing) setEditForm(null);
+  }, [isEditing]);
+
+  function submitEdit() {
+    if (!editForm) return;
+    const parts = [`(${task.priority || "C"})`, editForm.text.trim()];
+    editForm.project.trim().split(" ").filter(Boolean).forEach(p => parts.push(`+${p}`));
+    editForm.context.trim().split(" ").filter(Boolean).forEach(c => parts.push(`@${c}`));
+    if (editForm.due) parts.push(`due:${editForm.due}`);
+    if (editForm.rec.trim()) parts.push(`rec:${editForm.rec.trim()}`);
+    onSaveEdit(parts.join(" "));
+  }
 
   return (
     <div draggable={!isEditing}
@@ -1284,18 +1390,16 @@ function Row({ task, idx, meta, editingId, onToggle, onDelete, onEdit, onSaveEdi
       style={{ borderTop: idx > 0 ? `1px solid ${meta.border}` : "none",
         background: dragOverId === task.id ? meta.border + "88" : "transparent",
         opacity: dragId === task.id ? 0.4 : 1 }}>
-      {isEditing ? (
+      {isEditing && editForm ? (
         <div style={{ padding:"10px 12px" }}>
-          <input value={editRaw} onChange={e => setEditRaw(e.target.value)}
-            onKeyDown={e => { if (e.key==="Enter") onSaveEdit(editRaw); if (e.key==="Escape") onCancelEdit(); }}
-            autoFocus
-            style={{ width:"100%", fontFamily:"monospace", fontSize:12, padding:"6px 8px",
-              border:`1px solid ${meta.border}`, borderRadius:4, boxSizing:"border-box" }} />
-          <div style={{ display:"flex", gap:6, marginTop:6 }}>
-            <SBtn onClick={() => onSaveEdit(editRaw)} color={meta.accent}>Save</SBtn>
-            <SBtn onClick={onCancelEdit} color="#aaa">Cancel</SBtn>
-            <span style={{ fontSize:10, color:"#bbb", alignSelf:"center" }}>todo.txt format · Enter saves · Esc cancels</span>
+          <div style={{ fontSize:11, color:"#8a7060", marginBottom:8, letterSpacing:"0.05em" }}>
+            Editing task
           </div>
+          <TaskForm
+            meta={meta} form={editForm} setForm={setEditForm}
+            onSubmit={submitEdit} onCancel={onCancelEdit}
+            submitLabel="Save" allProjects={allProjects} allContexts={allContexts}
+          />
         </div>
       ) : (
         <div style={{ display:"flex", alignItems:"flex-start", padding:"9px 12px", gap:8,
@@ -1310,9 +1414,12 @@ function Row({ task, idx, meta, editingId, onToggle, onDelete, onEdit, onSaveEdi
           <input type="checkbox" checked={task.done} onChange={onToggle}
             style={{ marginTop:3, flexShrink:0, accentColor:meta.accent, cursor:"pointer", width:14, height:14 }} />
           <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontSize:14, lineHeight:1.4,
-              textDecoration: task.done ? "line-through" : "none",
-              color: task.done ? "#aaa" : "#1e1810" }}>
+            {/* Clicking the task text opens the editor */}
+            <div onClick={() => setEditingId(task.id)}
+              style={{ fontSize:14, lineHeight:1.4, cursor:"pointer",
+                textDecoration: task.done ? "line-through" : "none",
+                color: task.done ? "#aaa" : "#1e1810" }}
+              title="Click to edit">
               {task.cleanText}
               {task.recurrence && !task.done && (
                 <span style={{ marginLeft:7, fontSize:10, color: PMETA["R"].accent, opacity:0.75,
@@ -1336,12 +1443,9 @@ function Row({ task, idx, meta, editingId, onToggle, onDelete, onEdit, onSaveEdi
               ))}
             </div>
           </div>
-          <div style={{ display:"flex", gap:2, flexShrink:0 }}>
-            <button onClick={() => { setEditRaw(taskToTxt(task)); onEdit(); }} title="Edit raw"
-              style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, color:"#ccc", padding:"2px 4px" }}>✎</button>
-            <button onClick={onDelete} title="Delete"
-              style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, color:"#ddd", padding:"2px 4px" }}>✕</button>
-          </div>
+          <button onClick={onDelete} title="Delete"
+            style={{ background:"none", border:"none", cursor:"pointer", fontSize:13,
+              color:"#ddd", padding:"2px 4px", flexShrink:0 }}>✕</button>
         </div>
       )}
     </div>
