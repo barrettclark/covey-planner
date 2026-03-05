@@ -556,11 +556,94 @@ export default function App() {
   const todayLabel = new Date().toLocaleDateString("en-US",
     { weekday:"long", month:"long", day:"numeric", year:"numeric" });
 
+  // ── Daily quote (rotates by day of year) ──────────────────────────────────
+
+  const QUOTES = [
+    { text: "The key is not to prioritize what's on your schedule, but to schedule your priorities.", author: "Stephen Covey" },
+    { text: "Action is the foundational key to all success.", author: "Pablo Picasso" },
+    { text: "Do the hard jobs first. The easy jobs will take care of themselves.", author: "Dale Carnegie" },
+    { text: "It is not enough to be busy. The question is: what are we busy about?", author: "Henry David Thoreau" },
+    { text: "You don't have to see the whole staircase, just take the first step.", author: "Martin Luther King Jr." },
+    { text: "Simplicity is the ultimate sophistication.", author: "Leonardo da Vinci" },
+    { text: "The secret of getting ahead is getting started.", author: "Mark Twain" },
+    { text: "Focus on being productive instead of busy.", author: "Tim Ferriss" },
+    { text: "Either you run the day or the day runs you.", author: "Jim Rohn" },
+    { text: "Efficiency is doing things right. Effectiveness is doing the right things.", author: "Peter Drucker" },
+    { text: "The great dividing line between success and failure can be expressed in five words: I did not have time.", author: "Franklin Field" },
+    { text: "Until we can manage time, we can manage nothing else.", author: "Peter Drucker" },
+    { text: "Plans are nothing; planning is everything.", author: "Dwight D. Eisenhower" },
+    { text: "Your future is created by what you do today, not tomorrow.", author: "Robert Kiyosaki" },
+    { text: "The way to get started is to quit talking and begin doing.", author: "Walt Disney" },
+    { text: "Well begun is half done.", author: "Aristotle" },
+    { text: "Don't count the days, make the days count.", author: "Muhammad Ali" },
+    { text: "Lost time is never found again.", author: "Benjamin Franklin" },
+    { text: "The best time to plant a tree was 20 years ago. The second best time is now.", author: "Chinese Proverb" },
+    { text: "Amateurs sit and wait for inspiration. The rest of us just get up and go to work.", author: "Stephen King" },
+    { text: "Start where you are. Use what you have. Do what you can.", author: "Arthur Ashe" },
+    { text: "It always seems impossible until it's done.", author: "Nelson Mandela" },
+    { text: "Small deeds done are better than great deeds planned.", author: "Peter Marshall" },
+    { text: "The most difficult thing is the decision to act. The rest is merely tenacity.", author: "Amelia Earhart" },
+    { text: "Do what you can, with what you have, where you are.", author: "Theodore Roosevelt" },
+    { text: "Motivation is what gets you started. Habit is what keeps you going.", author: "Jim Ryun" },
+    { text: "You miss 100% of the shots you don't take.", author: "Wayne Gretzky" },
+    { text: "The only way to do great work is to love what you do.", author: "Steve Jobs" },
+    { text: "In preparing for battle I have always found that plans are useless, but planning is indispensable.", author: "Dwight D. Eisenhower" },
+    { text: "The future depends on what you do today.", author: "Mahatma Gandhi" },
+    { text: "A year from now you may wish you had started today.", author: "Karen Lamb" },
+    { text: "Done is better than perfect.", author: "Sheryl Sandberg" },
+    { text: "Perfection is the enemy of progress.", author: "Winston Churchill" },
+    { text: "If you want to make an easy job seem mighty hard, just keep putting off doing it.", author: "Olin Miller" },
+    { text: "The art of being wise is knowing what to overlook.", author: "William James" },
+  ];
+  const dayOfYear = Math.floor((new Date() - new Date(new Date().getFullYear(), 0, 0)) / 86400000);
+  const todayQuote = QUOTES[dayOfYear % QUOTES.length];
+
+  // ── NASA APOD ─────────────────────────────────────────────────────────────
+
+  const [apod, setApod] = useState(null);
+  const [apodError, setApodError] = useState(false);
+
+  useEffect(() => {
+    // Cache by date so we only fetch once per day
+    const cacheKey = `apod_${TODAY}`;
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) { try { setApod(JSON.parse(cached)); return; } catch {} }
+    fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&date=${TODAY}`)
+      .then(r => r.json())
+      .then(data => {
+        // Only use if it's a photo (not a video)
+        if (data.media_type === "image") {
+          setApod(data);
+          localStorage.setItem(cacheKey, JSON.stringify(data));
+        } else {
+          // Try yesterday if today is a video
+          return fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&count=8`)
+            .then(r => r.json())
+            .then(arr => {
+              const photo = arr.find(d => d.media_type === "image");
+              if (photo) { setApod(photo); localStorage.setItem(cacheKey, JSON.stringify(photo)); }
+              else setApodError(true);
+            });
+        }
+      })
+      .catch(() => setApodError(true));
+  }, []);
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div style={{ fontFamily:"'Palatino Linotype','Book Antiqua',Palatino,Georgia,serif", minHeight:"100vh", background:"#f2ede4", color:"#1e1810" }}>
-      <style>{`@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }`}</style>
+      <style>{`
+        @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
+        @keyframes fadein { from { opacity:0 } to { opacity:1 } }
+        .app-body { display: flex; align-items: flex-start; }
+        .task-col { flex: 1; min-width: 0; }
+        .photo-col { display: none; }
+        @media (min-width: 1100px) {
+          .photo-col { display: flex; flex-direction: column; width: 340px; flex-shrink: 0;
+            position: sticky; top: 0; height: 100vh; overflow: hidden; }
+        }
+      `}</style>
 
       {/* Header */}
       <div style={{ background:"#1e1810", color:"#f2ede4" }}>
@@ -625,6 +708,11 @@ export default function App() {
         )}
       </div>
 
+      {/* ── Two-column body ── */}
+      <div className="app-body">
+
+        {/* Left: task list */}
+        <div className="task-col">
       <div style={{ maxWidth:920, width:"100%", margin:"0 auto", padding:"22px 24px 60px", boxSizing:"border-box" }}>
 
         {/* Export */}
@@ -888,7 +976,62 @@ export default function App() {
             )}
           </>
         )}
-      </div>
+
+        {/* ── Quote footer ── */}
+        <div style={{ borderTop:"1px solid #d8d0c4", marginTop:32, padding:"20px 0 8px", textAlign:"center" }}>
+          <div style={{ fontSize:14, fontStyle:"italic", color:"#5a4a38", lineHeight:1.6, maxWidth:560, margin:"0 auto" }}>
+            "{todayQuote.text}"
+          </div>
+          <div style={{ fontSize:11, color:"#9a8a78", marginTop:6, letterSpacing:"0.08em" }}>
+            — {todayQuote.author}
+          </div>
+        </div>
+
+      </div>{/* end inner padding div */}
+      </div>{/* end task-col */}
+
+        {/* Right: NASA APOD photo panel */}
+        <div className="photo-col" style={{ background:"#111" }}>
+          {apod ? (
+            <>
+              <img src={apod.url} alt={apod.title}
+                style={{ width:"100%", height:"72vh", objectFit:"cover", display:"block",
+                  animation:"fadein 1s ease" }} />
+              <div style={{ flex:1, padding:"16px 18px 20px", background:"#111", overflowY:"auto" }}>
+                <div style={{ fontSize:10, letterSpacing:"0.18em", textTransform:"uppercase",
+                  color:"#5a5040", marginBottom:5 }}>NASA · Astronomy Picture of the Day</div>
+                <div style={{ fontSize:14, color:"#e8d8b8", lineHeight:1.5, fontWeight:"normal",
+                  marginBottom:8 }}>{apod.title}</div>
+                {apod.copyright && (
+                  <div style={{ fontSize:10, color:"#4a4030" }}>© {apod.copyright.replace("\n"," ")}</div>
+                )}
+                <div style={{ fontSize:11, color:"#4a4030", marginTop:8, lineHeight:1.6 }}>
+                  {apod.explanation?.slice(0, 200)}{apod.explanation?.length > 200 ? "…" : ""}
+                </div>
+                <a href={apod.hdurl || apod.url} target="_blank" rel="noreferrer"
+                  style={{ display:"inline-block", marginTop:10, fontSize:10, color:"#8a7860",
+                    letterSpacing:"0.08em", textDecoration:"none", borderBottom:"1px solid #3a3020" }}>
+                  View full image ↗
+                </a>
+              </div>
+            </>
+          ) : apodError ? (
+            <div style={{ height:"100%", display:"flex", alignItems:"center", justifyContent:"center",
+              flexDirection:"column", gap:8, color:"#3a3020", padding:24, textAlign:"center" }}>
+              <div style={{ fontSize:28 }}>🌌</div>
+              <div style={{ fontSize:12, color:"#5a5040" }}>NASA photo unavailable today</div>
+            </div>
+          ) : (
+            <div style={{ height:"100%", display:"flex", alignItems:"center", justifyContent:"center",
+              flexDirection:"column", gap:12 }}>
+              <div style={{ width:32, height:32, border:"2px solid #3a3020", borderTopColor:"#8a7060",
+                borderRadius:"50%", animation:"pulse 1s infinite" }} />
+              <div style={{ fontSize:11, color:"#3a3020", letterSpacing:"0.1em" }}>Loading…</div>
+            </div>
+          )}
+        </div>
+
+      </div>{/* end app-body */}
     </div>
   );
 }
