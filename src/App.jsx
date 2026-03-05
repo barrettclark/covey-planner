@@ -675,18 +675,18 @@ export default function App() {
                   <div style={{ fontSize:10, letterSpacing:"0.25em", textTransform:"uppercase", color:"#6a5040", marginBottom:3, display:"flex", alignItems:"center", gap:6 }}>
                     <a href="https://blog.franklinplanner.com/wp-content/uploads/sites/2/2015/01/1412030-GO-Community-Spring-2015-Final.pdf"
                       target="_blank" rel="noreferrer"
-                      style={{ color:"#8a7060", textDecoration:"none", borderBottom:"1px solid #3a2e20", letterSpacing:"0.25em" }}>
+                      style={{ color:"#c8b89a", textDecoration:"none", borderBottom:"1px solid #6a5040", letterSpacing:"0.25em" }}>
                       Franklin Covey
                     </a>
-                    <span style={{ color:"#3a2e20" }}>+</span>
+                    <span style={{ color:"#6a5040" }}>+</span>
                     <a href="https://github.com/todotxt/todo.txt"
                       target="_blank" rel="noreferrer"
-                      style={{ color:"#8a7060", textDecoration:"none", borderBottom:"1px solid #3a2e20", letterSpacing:"0.25em" }}>
+                      style={{ color:"#c8b89a", textDecoration:"none", borderBottom:"1px solid #6a5040", letterSpacing:"0.25em" }}>
                       todo.txt
                     </a>
                   </div>
                   <h1 style={{ margin:0, fontSize:24, fontWeight:"normal" }}>Daily Task Planner</h1>
-                  <div style={{ fontSize:12, color:"#5a4030", marginTop:2 }}>{todayLabel}</div>
+                  <div style={{ fontSize:12, color:"#a89070", marginTop:2 }}>{todayLabel}</div>
                 </div>
                 <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
                   {dbxConnected ? (
@@ -1019,18 +1019,18 @@ export default function App() {
                   animation:"fadein 1s ease" }} />
               <div style={{ flex:1, padding:"16px 18px 20px", background:"#111", overflowY:"auto" }}>
                 <div style={{ fontSize:10, letterSpacing:"0.18em", textTransform:"uppercase",
-                  color:"#5a5040", marginBottom:5 }}>NASA · Astronomy Picture of the Day</div>
-                <div style={{ fontSize:14, color:"#e8d8b8", lineHeight:1.5, fontWeight:"normal",
+                  color:"#a89878", marginBottom:5 }}>NASA · Astronomy Picture of the Day</div>
+                <div style={{ fontSize:14, color:"#f2ede4", lineHeight:1.5, fontWeight:"normal",
                   marginBottom:8 }}>{apod.title}</div>
                 {apod.copyright && (
-                  <div style={{ fontSize:10, color:"#4a4030" }}>© {apod.copyright.replace("\n"," ")}</div>
+                  <div style={{ fontSize:10, color:"#a89878" }}>© {apod.copyright.replace("\n"," ")}</div>
                 )}
-                <div style={{ fontSize:11, color:"#4a4030", marginTop:8, lineHeight:1.6 }}>
+                <div style={{ fontSize:11, color:"#9a8a70", marginTop:8, lineHeight:1.6 }}>
                   {apod.explanation?.slice(0, 200)}{apod.explanation?.length > 200 ? "…" : ""}
                 </div>
                 <a href={apod.hdurl || apod.url} target="_blank" rel="noreferrer"
-                  style={{ display:"inline-block", marginTop:10, fontSize:10, color:"#8a7860",
-                    letterSpacing:"0.08em", textDecoration:"none", borderBottom:"1px solid #3a3020" }}>
+                  style={{ display:"inline-block", marginTop:10, fontSize:10, color:"#c8b89a",
+                    letterSpacing:"0.08em", textDecoration:"none", borderBottom:"1px solid #6a5040" }}>
                   View full image ↗
                 </a>
               </div>
