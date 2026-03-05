@@ -272,6 +272,7 @@ export default function App() {
   const [editingId, setEditingId] = useState(null);
   const [addingFor, setAddingFor] = useState(null);
   const [form, setForm] = useState({ text:"", due:"", project:"", context:"", rec:"" });
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const [showExport, setShowExport] = useState(false);
   const [dbxConnected, setDbxConnected] = useState(!!loadTokens());
   const [dbxStatus, setDbxStatus] = useState(null); // "loading"|"saving"|"saved"|"error"|string
@@ -587,12 +588,12 @@ export default function App() {
                 ? <HBtn onClick={disconnectDropbox}>⏏ Disconnect</HBtn>
                 : <>
                     <HBtn onClick={startDropboxAuth}>🔗 Connect Dropbox</HBtn>
-                    <HBtn onClick={openFile}>📂 Open</HBtn>
-                    <HBtn onClick={saveFile}>{fileHandle ? "💾 Save" : "⬇ Download"}</HBtn>
+                    {!isMobile && <HBtn onClick={openFile}>📂 Open</HBtn>}
+                    {!isMobile && <HBtn onClick={saveFile}>{fileHandle ? "💾 Save" : "⬇ Download"}</HBtn>}
                   </>
               }
               <HBtn onClick={() => setShowDone(!showDone)}>{showDone ? "Hide Done" : `Done (${tasks.filter(t=>t.done).length})`}</HBtn>
-              <HBtn onClick={() => setShowExport(!showExport)}>Export</HBtn>
+              <HBtn onClick={() => setShowExport(!showExport)}>View todo.txt</HBtn>
             </div>
           </div>
           {/* Tabs */}
