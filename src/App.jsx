@@ -704,10 +704,27 @@ export default function App() {
         {/* ── WEEKLY VIEW ── */}
         {view === "weekly" && (
           <>
+            <style>{`
+              @media (min-width: 640px) {
+                .week-grid { display: grid !important; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+                .week-stack { display: none !important; }
+                .nodue-grid { display: flex !important; }
+                .nodue-stack { display: none !important; }
+              }
+              @media (max-width: 639px) {
+                .week-grid { display: none !important; }
+                .week-stack { display: flex !important; flex-direction: column; gap: 8px; }
+                .nodue-grid { display: none !important; }
+                .nodue-stack { display: block !important; }
+              }
+            `}</style>
+
             <div style={{ fontSize:12, color:"#8a7060", marginBottom:14 }}>
               Tasks due in the next 7 days. Overdue tasks surface under today.
             </div>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(7,1fr)", gap:8 }}>
+
+            {/* ── Desktop: 7-column grid ── */}
+            <div className="week-grid">
               {weekDays.map(date => {
                 const dt = dayTasks(date);
                 const today = date === TODAY;
@@ -744,22 +761,131 @@ export default function App() {
               })}
             </div>
 
-            <div style={{ marginTop:24 }}>
-              <div style={{ fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase", color:"#999", marginBottom:8 }}>No due date</div>
-              <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
-                {tasks.filter(t => !t.done && !t.dueDate).map(task => {
-                  const m = PMETA[task.priority] || PMETA["?"];
-                  return (
-                    <div key={task.id} style={{ background:"#ede8de", border:`1px solid ${m.border}`,
-                      borderRadius:4, padding:"5px 10px", fontSize:12, display:"flex", gap:6, alignItems:"center" }}>
-                      <span style={{ width:6, height:6, borderRadius:"50%", background:m.dot, flexShrink:0 }} />
-                      <span style={{ color:m.accent, fontSize:10, fontWeight:"bold" }}>{task.priority||"?"}</span>
-                      <span>{task.cleanText}</span>
+            {/* ── Mobile: vertical day list ── */}
+            <div className="week-stack">
+              {weekDays.map(date => {
+                const dt = dayTasks(date);
+                const today = date === TODAY;
+                const fullDate = new Date(date + "T12:00:00").toLocaleDateString("en-US",
+                  { weekday:"long", month:"long", day:"numeric" });
+                return (
+                  <div key={date} style={{
+                    background: today ? "#1e1810" : "#ede8de",
+                    border: today ? "2px solid #b33020" : "1px solid #ccc8be",
+                    borderRadius:8, overflow:"hidden",
+                  }}>
+                    {/* Day header */}
+                    <div style={{
+                      display:"flex", alignItems:"center", gap:12,
+                      padding:"10px 14px",
+                      borderBottom: dt.length > 0 ? `1px solid ${today ? "#2e2010" : "#ccc8be"}` : "none",
+                      background: today ? "#2e2010" : "#e0d8cc",
+                    }}>
+                      <div style={{ width:36, height:36, borderRadius:"50%", flexShrink:0,
+                        background: today ? "#b33020" : "#c8bfb0",
+                        display:"flex", alignItems:"center", justifyContent:"center",
+                        fontSize:18, fontWeight:"normal", color: today ? "#fff" : "#5a4a38" }}>
+                        {fmtDayNum(date)}
+                      </div>
+                      <div>
+                        <div style={{ fontSize:13, color: today ? "#f2ede4" : "#1e1810", lineHeight:1.2 }}>{fullDate.split(",")[0]}</div>
+                        <div style={{ fontSize:11, color: today ? "#8a7060" : "#8a7060" }}>{fullDate.split(",").slice(1).join(",").trim()}</div>
+                      </div>
+                      <div style={{ marginLeft:"auto", fontSize:11,
+                        color: today ? "#6a5040" : "#aaa",
+                        fontStyle: dt.length === 0 ? "italic" : "normal" }}>
+                        {dt.length === 0 ? "nothing due" : `${dt.length} task${dt.length > 1 ? "s" : ""}`}
+                      </div>
                     </div>
-                  );
-                })}
-              </div>
+                    {/* Tasks */}
+                    {dt.length > 0 && (
+                      <div style={{ padding:"8px 14px 10px" }}>
+                        {dt.map(task => {
+                          const m = PMETA[task.priority] || PMETA["?"];
+                          return (
+                            <div key={task.id} style={{ display:"flex", alignItems:"flex-start", gap:10,
+                              padding:"7px 0", borderBottom:`1px solid ${today ? "#2e2010" : "#d8d0c4"}`,
+                              lastChild:{ borderBottom:"none" } }}>
+                              <span style={{ width:8, height:8, borderRadius:"50%", background:m.dot,
+                                flexShrink:0, marginTop:5 }} />
+                              <div style={{ flex:1 }}>
+                                <div style={{ fontSize:14, color: today ? "#f2ede4" : "#1e1810", lineHeight:1.4 }}>
+                                  {task.cleanText}
+                                </div>
+                                <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:3 }}>
+                                  <span style={{ fontSize:10, fontWeight:"bold", color:m.accent,
+                                    background: today ? "#2e2010" : "#e8e2d8",
+                                    padding:"1px 6px", borderRadius:3 }}>
+                                    {effectivePriority(task) || task.priority || "?"}
+                                  </span>
+                                  {task.recurrence && (
+                                    <span style={{ fontSize:10, color: today ? "#6a5040" : "#aaa" }}>↺ {task.recurrence}</span>
+                                  )}
+                                  {task.projects.map(p => (
+                                    <span key={p} style={{ fontSize:10, fontFamily:"monospace", color:"#3558b0",
+                                      background:"#e8f0fe", padding:"1px 5px", borderRadius:3 }}>+{p}</span>
+                                  ))}
+                                  {task.contexts.map(c => (
+                                    <span key={c} style={{ fontSize:10, fontFamily:"monospace", color:"#2a7048",
+                                      background:"#eef7f2", padding:"1px 5px", borderRadius:3 }}>@{c}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+
+            {/* ── No due date ── */}
+            {tasks.filter(t => !t.done && !t.dueDate).length > 0 && (
+              <div style={{ marginTop:24 }}>
+                <div style={{ fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase",
+                  color:"#999", marginBottom:10 }}>No due date</div>
+
+                {/* Desktop: chips */}
+                <div className="nodue-grid" style={{ flexWrap:"wrap", gap:6 }}>
+                  {tasks.filter(t => !t.done && !t.dueDate).map(task => {
+                    const m = PMETA[task.priority] || PMETA["?"];
+                    return (
+                      <div key={task.id} style={{ background:"#ede8de", border:`1px solid ${m.border}`,
+                        borderRadius:4, padding:"5px 10px", fontSize:12, display:"flex", gap:6, alignItems:"center" }}>
+                        <span style={{ width:6, height:6, borderRadius:"50%", background:m.dot, flexShrink:0 }} />
+                        <span style={{ color:m.accent, fontSize:10, fontWeight:"bold" }}>{task.priority||"?"}</span>
+                        <span>{task.cleanText}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Mobile: stacked rows */}
+                <div className="nodue-stack" style={{ background:"#ede8de", border:"1px solid #ccc8be", borderRadius:8, overflow:"hidden" }}>
+                  {tasks.filter(t => !t.done && !t.dueDate).map((task, idx) => {
+                    const m = PMETA[task.priority] || PMETA["?"];
+                    return (
+                      <div key={task.id} style={{ display:"flex", alignItems:"center", gap:10,
+                        padding:"11px 14px",
+                        borderTop: idx > 0 ? "1px solid #d0c8bc" : "none" }}>
+                        <div style={{ width:22, height:22, borderRadius:"50%", background:m.accent,
+                          color:"#fff", display:"flex", alignItems:"center", justifyContent:"center",
+                          fontSize:11, fontWeight:"bold", flexShrink:0 }}>
+                          {task.priority||"?"}
+                        </div>
+                        <span style={{ fontSize:14, color:"#1e1810", flex:1 }}>{task.cleanText}</span>
+                        {task.projects.map(p => (
+                          <span key={p} style={{ fontSize:10, fontFamily:"monospace", color:"#3558b0",
+                            background:"#e8f0fe", padding:"1px 5px", borderRadius:3 }}>+{p}</span>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
