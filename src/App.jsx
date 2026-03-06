@@ -485,14 +485,17 @@ export default function App() {
   const doneTasks = todayVisible.filter(t => t.done);
 
   // ── App badge (iOS 16.4+ PWA, Chrome on Android/desktop) ──────────────────
+  const badgeCount = tasks.filter(t =>
+    !t.done && t.dueDate && t.dueDate <= TODAY
+  ).length;
   useEffect(() => {
     if (!("setAppBadge" in navigator)) return;
-    if (activeTasks.length > 0) {
-      navigator.setAppBadge(activeTasks.length).catch(() => {});
+    if (badgeCount > 0) {
+      navigator.setAppBadge(badgeCount).catch(() => {});
     } else {
       navigator.clearAppBadge().catch(() => {});
     }
-  }, [activeTasks.length]);
+  }, [badgeCount]);
 
   const groups = { A:[], B:[], C:[], "?":[],  };
   activeTasks.forEach(t => {
