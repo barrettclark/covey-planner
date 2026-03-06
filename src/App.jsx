@@ -156,7 +156,8 @@ function parseTodoTxt(raw, id) {
     .replace(/@\S+/g, "")
     .replace(/\s+/g, " ").trim();
 
-  return { id, priority, cleanText, dueDate, recurrence, projects, contexts, done, completedDate };
+  const inProgress = raw.includes("status:inprogress");
+  return { id, priority, cleanText, dueDate, recurrence, projects, contexts, done, completedDate, inProgress };
 }
 
 function taskToTxt(task) {
@@ -168,6 +169,7 @@ function taskToTxt(task) {
   if (task.contexts.length) line += " " + task.contexts.map(c => `@${c}`).join(" ");
   if (task.dueDate) line += ` due:${task.dueDate}`;
   if (task.recurrence) line += ` rec:${task.recurrence}`;
+  if (task.inProgress && !task.done) line += ` status:inprogress`;
   return line;
 }
 
@@ -422,6 +424,10 @@ export default function App() {
 
   function deleteTask(id) { setTasks(prev => prev.filter(t => t.id !== id)); }
 
+  function toggleInProgress(id) {
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, inProgress: !t.inProgress } : t));
+  }
+
   function saveEdit(id, raw) {
     setTasks(prev => prev.map(t => t.id === id ? { ...parseTodoTxt(raw, id), done: t.done } : t));
     setEditingId(null);
@@ -672,21 +678,21 @@ export default function App() {
             <div className="task-col-inner" style={{ padding:"20px 24px 0" }}>
               <div style={{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", flexWrap:"wrap", gap:12, paddingBottom:14 }}>
                 <div>
-                  <div style={{ fontSize:10, letterSpacing:"0.25em", textTransform:"uppercase", color:"#6a5040", marginBottom:3, display:"flex", alignItems:"center", gap:6 }}>
+                  <div style={{ fontSize:10, letterSpacing:"0.25em", textTransform:"uppercase", color:"#c8b89a", marginBottom:3, display:"flex", alignItems:"center", gap:6 }}>
                     <a href="https://blog.franklinplanner.com/wp-content/uploads/sites/2/2015/01/1412030-GO-Community-Spring-2015-Final.pdf"
                       target="_blank" rel="noreferrer"
-                      style={{ color:"#c8b89a", textDecoration:"none", borderBottom:"1px solid #6a5040", letterSpacing:"0.25em" }}>
+                      style={{ color:"#e8d8b8", textDecoration:"none", borderBottom:"1px solid #8a7060", letterSpacing:"0.25em" }}>
                       Franklin Covey
                     </a>
-                    <span style={{ color:"#6a5040" }}>+</span>
+                    <span style={{ color:"#8a7060" }}>+</span>
                     <a href="https://github.com/todotxt/todo.txt"
                       target="_blank" rel="noreferrer"
-                      style={{ color:"#c8b89a", textDecoration:"none", borderBottom:"1px solid #6a5040", letterSpacing:"0.25em" }}>
+                      style={{ color:"#e8d8b8", textDecoration:"none", borderBottom:"1px solid #8a7060", letterSpacing:"0.25em" }}>
                       todo.txt
                     </a>
                   </div>
                   <h1 style={{ margin:0, fontSize:24, fontWeight:"normal" }}>Daily Task Planner</h1>
-                  <div style={{ fontSize:12, color:"#a89070", marginTop:2 }}>{todayLabel}</div>
+                  <div style={{ fontSize:12, color:"#c8b89a", marginTop:2 }}>{todayLabel}</div>
                 </div>
                 <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center" }}>
                   {dbxConnected ? (
@@ -723,7 +729,7 @@ export default function App() {
                 {[["daily","📋 Today"],["weekly","📅 Week Ahead"]].map(([v,label]) => (
                   <button key={v} onClick={() => setView(v)} style={{
                     background: view===v ? "#f2ede4" : "transparent",
-                    color: view===v ? "#1e1810" : "#6a5040",
+                    color: view===v ? "#1e1810" : "#a89070",
                     border:"none", cursor:"pointer", padding:"9px 18px",
                     fontSize:11, letterSpacing:"0.1em", textTransform:"uppercase",
                     fontFamily:"inherit", borderRadius:"4px 4px 0 0",
@@ -735,7 +741,7 @@ export default function App() {
             {(allCtx.length > 0 || allProj.length > 0) && (
               <div style={{ background:"#160e08", borderTop:"1px solid #2e2010" }}>
                 <div className="task-col-inner" style={{ padding:"6px 24px", display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
-                  <span style={{ fontSize:10, color:"#4a3828", letterSpacing:"0.15em", textTransform:"uppercase", marginRight:4 }}>Filter</span>
+                  <span style={{ fontSize:10, color:"#8a7060", letterSpacing:"0.15em", textTransform:"uppercase", marginRight:4 }}>Filter</span>
                   {allCtx.map(c => (
                     <Chip key={c} label={`@${c}`} active={filterCtx===c} color="#7ec8a0" onClick={() => setFilterCtx(filterCtx===c ? null : c)} />
                   ))}
@@ -795,7 +801,7 @@ export default function App() {
                 addingFor={addingFor} setAddingFor={setAddingFor}
                 form={form} setForm={setForm} onAdd={addTask}
                 editingId={editingId} setEditingId={setEditingId}
-                onToggle={toggleDone} onDelete={deleteTask} onSaveEdit={saveEdit}
+                onToggle={toggleDone} onToggleInProgress={toggleInProgress} onDelete={deleteTask} onSaveEdit={saveEdit}
                 dragId={dragId} dragOverId={dragOverId}
                 dragOverGroup={dragOverGroup} setDragOverGroup={setDragOverGroup}
                 setDragId={setDragId} setDragOverId={setDragOverId}
@@ -1201,7 +1207,7 @@ x 2026-03-05 (A) Completed task`
 // ─── Group ────────────────────────────────────────────────────────────────────
 
 function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, onAdd,
-  editingId, setEditingId, onToggle, onDelete, onSaveEdit,
+  editingId, setEditingId, onToggle, onToggleInProgress, onDelete, onSaveEdit,
   dragId, dragOverId, dragOverGroup, setDragOverGroup, setDragId, setDragOverId, onDrop, onDropGroup,
   allProjects, allContexts }) {
   const headerIsTarget = dragOverGroup === priority;
@@ -1245,7 +1251,9 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
           : tasks.map((task, idx) => (
               <Row key={task.id} task={task} idx={idx} meta={meta}
                 editingId={editingId} setEditingId={setEditingId}
-                onToggle={() => onToggle(task.id)} onDelete={() => onDelete(task.id)}
+                onToggle={() => onToggle(task.id)}
+                onToggleInProgress={() => onToggleInProgress(task.id)}
+                onDelete={() => onDelete(task.id)}
                 onSaveEdit={raw => onSaveEdit(task.id, raw)}
                 onCancelEdit={() => setEditingId(null)}
                 dragId={dragId} dragOverId={dragOverId}
@@ -1341,6 +1349,21 @@ function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allPro
         </div>
       </div>
 
+      <div style={{ display:"flex", gap:6, alignItems:"center", marginBottom:12 }}>
+        <div onClick={() => setForm(f => ({...f, inProgress: !f.inProgress}))}
+          style={{ cursor:"pointer", display:"flex", alignItems:"center", gap:6 }}>
+          <div style={{
+            width:16, height:16, borderRadius:3, border:"2px solid",
+            borderColor: form.inProgress ? "#b07010" : "#bbb",
+            background: form.inProgress ? "#b07010" : "transparent",
+            display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0
+          }}>
+            {form.inProgress && <span style={{ color:"#fff", fontSize:11, lineHeight:1 }}>▶</span>}
+          </div>
+          <span style={{ fontSize:12, color:"#5a4a38" }}>Mark as in progress</span>
+        </div>
+      </div>
+
       <div style={{ display:"flex", gap:6 }}>
         <SBtn onClick={onSubmit} color={meta?.accent || "#888"}>{submitLabel}</SBtn>
         <SBtn onClick={onCancel} color="#aaa">Cancel</SBtn>
@@ -1351,7 +1374,7 @@ function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allPro
 
 // ─── Row ──────────────────────────────────────────────────────────────────────
 
-function Row({ task, idx, meta, editingId, setEditingId, onToggle, onDelete, onSaveEdit, onCancelEdit,
+function Row({ task, idx, meta, editingId, setEditingId, onToggle, onToggleInProgress, onDelete, onSaveEdit, onCancelEdit,
   dragId, dragOverId, onDragStart, onDragOver, onDrop, allProjects, allContexts }) {
   const isEditing = editingId === task.id;
   const overdue = task.dueDate && task.dueDate < TODAY && !task.done;
@@ -1367,6 +1390,7 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onDelete, onS
         rec: task.recurrence || "",
         project: task.projects.join(" "),
         context: task.contexts.join(" "),
+        inProgress: task.inProgress || false,
       });
     }
     if (!isEditing) setEditForm(null);
@@ -1379,6 +1403,7 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onDelete, onS
     editForm.context.trim().split(" ").filter(Boolean).forEach(c => parts.push(`@${c}`));
     if (editForm.due) parts.push(`due:${editForm.due}`);
     if (editForm.rec.trim()) parts.push(`rec:${editForm.rec.trim()}`);
+    if (editForm.inProgress) parts.push(`status:inprogress`);
     onSaveEdit(parts.join(" "));
   }
 
@@ -1411,8 +1436,16 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onDelete, onS
             color: task.done ? "#bbb" : meta.accent, paddingTop:3, flexShrink:0 }}>
             {task.done ? "✓" : `${effectivePriority(task) || task.priority || "?"}${idx+1}`}
           </div>
-          <input type="checkbox" checked={task.done} onChange={onToggle}
-            style={{ marginTop:3, flexShrink:0, accentColor:meta.accent, cursor:"pointer", width:14, height:14 }} />
+          {/* Custom checkbox — works on iOS Safari */}
+          <div onClick={onToggle} style={{
+            marginTop:3, flexShrink:0, cursor:"pointer",
+            width:16, height:16, borderRadius:3,
+            border: task.done ? `2px solid ${meta.accent}` : `2px solid #bbb`,
+            background: task.done ? meta.accent : "transparent",
+            display:"flex", alignItems:"center", justifyContent:"center",
+          }}>
+            {task.done && <span style={{ color:"#fff", fontSize:11, lineHeight:1 }}>✓</span>}
+          </div>
           <div style={{ flex:1, minWidth:0 }}>
             {/* Clicking the task text opens the editor */}
             <div onClick={() => setEditingId(task.id)}
@@ -1421,6 +1454,10 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onDelete, onS
                 color: task.done ? "#aaa" : "#1e1810" }}
               title="Click to edit">
               {task.cleanText}
+              {task.inProgress && !task.done && (
+                <span style={{ marginLeft:7, fontSize:10, color:"#fff",
+                  background:"#b07010", borderRadius:3, padding:"1px 6px" }}>▶ in progress</span>
+              )}
               {task.recurrence && !task.done && (
                 <span style={{ marginLeft:7, fontSize:10, color: PMETA["R"].accent, opacity:0.75,
                   background:"#eef2fb", borderRadius:3, padding:"1px 5px" }}>↺ rec</span>
@@ -1443,9 +1480,14 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onDelete, onS
               ))}
             </div>
           </div>
-          <button onClick={onDelete} title="Delete"
-            style={{ background:"none", border:"none", cursor:"pointer", fontSize:13,
-              color:"#ddd", padding:"2px 4px", flexShrink:0 }}>✕</button>
+          <div style={{ display:"flex", flexDirection:"column", gap:4, flexShrink:0, alignItems:"center" }}>
+            <button onClick={onToggleInProgress} title={task.inProgress ? "Clear in-progress" : "Mark in-progress"}
+              style={{ background:"none", border:"none", cursor:"pointer", fontSize:13,
+                color: task.inProgress ? "#b07010" : "#ddd", padding:"2px 4px" }}>▶</button>
+            <button onClick={onDelete} title="Delete"
+              style={{ background:"none", border:"none", cursor:"pointer", fontSize:13,
+                color:"#ddd", padding:"2px 4px" }}>✕</button>
+          </div>
         </div>
       )}
     </div>
