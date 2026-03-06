@@ -174,7 +174,17 @@ function taskToTxt(task) {
   return line;
 }
 
-// ─── Date helpers ─────────────────────────────────────────────────────────────
+// Sort lines to match vim todo.txt plugin \s behavior — lexicographic on the raw line.
+// (A) < (B) < ... < (R) < unprioritized < x (completed)
+function sortedTxt(tasks) {
+  return tasks.map(taskToTxt).sort((a, b) => {
+    // Completed lines always last
+    const aDone = a.startsWith("x ");
+    const bDone = b.startsWith("x ");
+    if (aDone !== bDone) return aDone ? 1 : -1;
+    return a.localeCompare(b);
+  }).join("\n") + "\n";
+}
 
 const TODAY = new Date().toISOString().split("T")[0];
 
@@ -346,7 +356,7 @@ export default function App() {
     if (!token) return;
     setDbxStatus("saving");
     try {
-      const txt = taskList.map(taskToTxt).join("\n") + "\n";
+      const txt = sortedTxt(taskList);
       await dbxUpload(token, txt);
       setDbxStatus("saved");
     } catch(e) {
@@ -384,7 +394,7 @@ export default function App() {
   }
 
   async function saveFile() {
-    const txt = tasks.map(taskToTxt).join("\n") + "\n";
+    const txt = sortedTxt(tasks);
     if (fileHandle) {
       try {
         const w = await fileHandle.createWritable();
@@ -560,7 +570,7 @@ export default function App() {
     setRescheduleDate("");
   }
 
-  const exportTxt = tasks.map(taskToTxt).join("\n");
+  const exportTxt = sortedTxt(tasks).trimEnd();
   const todayLabel = new Date().toLocaleDateString("en-US",
     { weekday:"long", month:"long", day:"numeric", year:"numeric" });
 
