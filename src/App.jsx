@@ -856,7 +856,7 @@ export default function App() {
                     {dt.length === 0
                       ? <div style={{ fontSize:11, color: today ? "#3a2e20" : "#bbb", fontStyle:"italic" }}>—</div>
                       : dt.map(task => {
-                          const m = PMETA[task.priority] || PMETA["?"];
+                          const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
                           return (
                             <div key={task.id} style={{ marginBottom:5 }}>
                               <div style={{ display:"flex", alignItems:"flex-start", gap:5 }}>
@@ -865,6 +865,10 @@ export default function App() {
                                   {task.cleanText}
                                 </span>
                               </div>
+                              {task.inProgress && (
+                                <div style={{ fontSize:9, color:"#fff", background:"#b07010",
+                                  borderRadius:3, padding:"1px 5px", marginLeft:11, display:"inline-block", marginTop:2 }}>▶ in progress</div>
+                              )}
                               {task.recurrence && (
                                 <div style={{ fontSize:9, color: today ? "#5a4030" : "#bbb", marginLeft:11 }}>↺ {task.recurrence}</div>
                               )}
@@ -916,7 +920,7 @@ export default function App() {
                     {dt.length > 0 && (
                       <div style={{ padding:"8px 14px 10px" }}>
                         {dt.map(task => {
-                          const m = PMETA[task.priority] || PMETA["?"];
+                          const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
                           return (
                             <div key={task.id} style={{ display:"flex", alignItems:"flex-start", gap:10,
                               padding:"7px 0", borderBottom:`1px solid ${today ? "#2e2010" : "#d8d0c4"}`,
@@ -933,6 +937,10 @@ export default function App() {
                                     padding:"1px 6px", borderRadius:3 }}>
                                     {effectivePriority(task) || task.priority || "?"}
                                   </span>
+                                  {task.inProgress && (
+                                    <span style={{ fontSize:10, color:"#fff", background:"#b07010",
+                                      borderRadius:3, padding:"1px 6px" }}>▶ in progress</span>
+                                  )}
                                   {task.recurrence && (
                                     <span style={{ fontSize:10, color: today ? "#6a5040" : "#aaa" }}>↺ {task.recurrence}</span>
                                   )}
@@ -965,7 +973,7 @@ export default function App() {
                 {/* Desktop: chips */}
                 <div className="nodue-grid" style={{ flexWrap:"wrap", gap:6 }}>
                   {tasks.filter(t => !t.done && !t.dueDate).map(task => {
-                    const m = PMETA[task.priority] || PMETA["?"];
+                    const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
                     return (
                       <div key={task.id} style={{ background:"#ede8de", border:`1px solid ${m.border}`,
                         borderRadius:4, padding:"5px 10px", fontSize:12, display:"flex", gap:6, alignItems:"center" }}>
@@ -980,7 +988,7 @@ export default function App() {
                 {/* Mobile: stacked rows */}
                 <div className="nodue-stack" style={{ background:"#ede8de", border:"1px solid #ccc8be", borderRadius:8, overflow:"hidden" }}>
                   {tasks.filter(t => !t.done && !t.dueDate).map((task, idx) => {
-                    const m = PMETA[task.priority] || PMETA["?"];
+                    const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
                     return (
                       <div key={task.id} style={{ display:"flex", alignItems:"center", gap:10,
                         padding:"11px 14px",
