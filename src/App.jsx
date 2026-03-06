@@ -147,12 +147,15 @@ function parseTodoTxt(raw, id) {
 
   const dueM = raw.match(/due:(\d{4}-\d{2}-\d{2})/);
   const dueDate = dueM ? dueM[1] : null;
+  const threshM = raw.match(/t:(\d{4}-\d{2}-\d{2})/);
+  const threshDate = threshM ? threshM[1] : null;
   const recurrence = parseRecurrence(raw);
   const projects = [...raw.matchAll(/\+(\S+)/g)].map(m => m[1]);
   const contexts = [...raw.matchAll(/@(\S+)/g)].map(m => m[1]);
 
   const cleanText = text
     .replace(/due:\d{4}-\d{2}-\d{2}/g, "")
+    .replace(/t:\d{4}-\d{2}-\d{2}/g, "")
     .replace(/rec:\S+/g, "")
     .replace(/status:\S+/g, "")
     .replace(/pri:[A-Z]/g, "")
@@ -161,7 +164,7 @@ function parseTodoTxt(raw, id) {
     .replace(/\s+/g, " ").trim();
 
   const inProgress = raw.includes("status:inprogress");
-  return { id, priority, cleanText, dueDate, recurrence, projects, contexts, done, completedDate, inProgress };
+  return { id, priority, cleanText, dueDate, threshDate, recurrence, projects, contexts, done, completedDate, inProgress };
 }
 
 function taskToTxt(task) {
@@ -177,6 +180,7 @@ function taskToTxt(task) {
   if (task.projects.length) line += " " + task.projects.map(p => `+${p}`).join(" ");
   if (task.contexts.length) line += " " + task.contexts.map(c => `@${c}`).join(" ");
   if (task.dueDate) line += ` due:${task.dueDate}`;
+  if (task.threshDate) line += ` t:${task.threshDate}`;
   if (task.recurrence) line += ` rec:${task.recurrence}`;
   if (task.inProgress && !task.done) line += ` status:inprogress`;
   return line;
@@ -209,6 +213,18 @@ function advanceDate(from, rec) {
     let a = 0;
     while (a < n) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) a++; }
   }
+  return d.toISOString().split("T")[0];
+}
+
+// Suggest a t: threshold date proportional to how far out the due date is
+function suggestThreshold(dueDate) {
+  if (!dueDate) return "";
+  const days = Math.round((new Date(dueDate + "T12:00:00") - new Date(TODAY + "T12:00:00")) / 86400000);
+  if (days < 14) return "";
+  const d = new Date(dueDate + "T12:00:00");
+  if (days < 30)  { d.setDate(d.getDate() - 7);  }  // 2–4 weeks out → surface 1w before
+  else if (days < 90) { d.setDate(d.getDate() - 14); }  // 1–3 months out → surface 2w before
+  else { d.setMonth(d.getMonth() - 1); }               // 3+ months out → surface 1m before
   return d.toISOString().split("T")[0];
 }
 
@@ -292,7 +308,7 @@ export default function App() {
   const [filterProj, setFilterProj] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [addingFor, setAddingFor] = useState(null);
-  const [form, setForm] = useState({ text:"", due:"", project:"", context:"", rec:"" });
+  const [form, setForm] = useState({ text:"", due:"", thresh:"", project:"", context:"", rec:"" });
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const [showHelp, setShowHelp] = useState(false);
   const [showExport, setShowExport] = useState(false);
@@ -461,9 +477,10 @@ export default function App() {
     if (form.project.trim()) parts.push(`+${form.project.trim()}`);
     if (form.context.trim()) parts.push(`@${form.context.trim()}`);
     if (form.due) parts.push(`due:${form.due}`);
+    if (form.thresh) parts.push(`t:${form.thresh}`);
     if (form.rec.trim()) parts.push(`rec:${form.rec.trim()}`);
     setTasks(prev => [...prev, parseTodoTxt(parts.join(" "), id)]);
-    setForm({ text:"", due:"", project:"", context:"", rec:"" });
+    setForm({ text:"", due:"", thresh:"", project:"", context:"", rec:"" });
     setAddingFor(null);
   }
 
@@ -473,6 +490,8 @@ export default function App() {
     if (task.done && !showDone) return false;
     if (filterCtx && !task.contexts.includes(filterCtx)) return false;
     if (filterProj && !task.projects.includes(filterProj)) return false;
+    // Hide if threshold date is in the future
+    if (!task.done && task.threshDate && task.threshDate > TODAY) return false;
     // R tasks: only show if effectivePriority resolves to A or B (due today/tomorrow)
     if (task.priority === "R" && !task.done) {
       return effectivePriority(task) === "A" || effectivePriority(task) === "B";
@@ -486,7 +505,9 @@ export default function App() {
 
   // ── App badge (iOS 16.4+ PWA, Chrome on Android/desktop) ──────────────────
   const badgeCount = tasks.filter(t =>
-    !t.done && t.dueDate && t.dueDate <= TODAY
+    !t.done &&
+    t.dueDate && t.dueDate <= TODAY &&
+    (!t.threshDate || t.threshDate <= TODAY)
   ).length;
   useEffect(() => {
     if (!("setAppBadge" in navigator)) return;
@@ -515,7 +536,11 @@ export default function App() {
       if (t.dueDate === date) return true;
       if (date === TODAY && t.dueDate && t.dueDate < TODAY) return true;
       return false;
-    });
+    }).map(t => ({
+      ...t,
+      // Flag tasks whose threshold hasn't arrived yet — shown muted in weekly
+      threshPending: !!(t.threshDate && t.threshDate > date),
+    }));
   }
 
   // Drop onto a task (reorder within group, or cross-group reprioritize)
@@ -895,8 +920,11 @@ export default function App() {
                             <div key={task.id} style={{ marginBottom:5 }}>
                               <div style={{ display:"flex", alignItems:"flex-start", gap:5 }}>
                                 <span style={{ width:6, height:6, borderRadius:"50%", background:m.dot, flexShrink:0, marginTop:4 }} />
-                                <span style={{ fontSize:11, lineHeight:1.35, color: today ? "#c8b89a" : "#3a2e22" }}>
+                                <span style={{ fontSize:11, lineHeight:1.35,
+                                  color: task.threshPending ? "#aaa" : (today ? "#c8b89a" : "#3a2e22"),
+                                  fontStyle: task.threshPending ? "italic" : "normal" }}>
                                   {task.cleanText}
+                                  {task.threshPending && <span style={{ fontSize:9, marginLeft:4 }}>⏳</span>}
                                 </span>
                               </div>
                               {task.inProgress && (
@@ -962,8 +990,11 @@ export default function App() {
                               <span style={{ width:8, height:8, borderRadius:"50%", background:m.dot,
                                 flexShrink:0, marginTop:5 }} />
                               <div style={{ flex:1 }}>
-                                <div style={{ fontSize:14, color: today ? "#f2ede4" : "#1e1810", lineHeight:1.4 }}>
+                                <div style={{ fontSize:14, lineHeight:1.4,
+                                  color: task.threshPending ? "#aaa" : (today ? "#f2ede4" : "#1e1810"),
+                                  fontStyle: task.threshPending ? "italic" : "normal" }}>
                                   {task.cleanText}
+                                  {task.threshPending && <span style={{ fontSize:11, marginLeft:5 }}>⏳</span>}
                                 </div>
                                 <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:3 }}>
                                   <span style={{ fontSize:10, fontWeight:"bold", color:m.accent,
@@ -1334,11 +1365,20 @@ function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allPro
           padding:"7px 10px", fontSize:14, fontFamily:"inherit", background:"#fff",
           boxSizing:"border-box", marginBottom:10 }} />
 
-      {/* Row 1: due date + rec */}
+      {/* Row 1: due date + threshold + rec */}
       <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
         <label style={{ display:"flex", flexDirection:"column", gap:3 }}>
           <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060" }}>Due date</span>
-          <input value={form.due} type="date" onChange={e => setForm(f => ({...f, due:e.target.value}))} style={mini} />
+          <input value={form.due} type="date" onChange={e => {
+            const due = e.target.value;
+            setForm(f => ({ ...f, due, thresh: suggestThreshold(due) }));
+          }} style={mini} />
+        </label>
+        <label style={{ display:"flex", flexDirection:"column", gap:3 }}>
+          <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060" }}>
+            Show from (t:)
+          </span>
+          <input value={form.thresh || ""} type="date" onChange={e => setForm(f => ({...f, thresh: e.target.value}))} style={mini} />
         </label>
         <label style={{ display:"flex", flexDirection:"column", gap:3 }}>
           <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060" }}>Recurrence</span>
@@ -1429,6 +1469,7 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onToggleInPro
       setEditForm({
         text: task.cleanText,
         due: task.dueDate || "",
+        thresh: task.threshDate || "",
         rec: task.recurrence || "",
         project: task.projects.join(" "),
         context: task.contexts.join(" "),
@@ -1446,6 +1487,7 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onToggleInPro
     editForm.project.trim().split(" ").filter(Boolean).forEach(p => parts.push(`+${p}`));
     editForm.context.trim().split(" ").filter(Boolean).forEach(c => parts.push(`@${c}`));
     if (editForm.due) parts.push(`due:${editForm.due}`);
+    if (editForm.thresh) parts.push(`t:${editForm.thresh}`);
     if (editForm.rec.trim()) parts.push(`rec:${editForm.rec.trim()}`);
     if (editForm.inProgress) parts.push(`status:inprogress`);
     onSaveEdit(parts.join(" "));
