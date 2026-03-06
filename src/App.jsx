@@ -152,6 +152,7 @@ function parseTodoTxt(raw, id) {
   const cleanText = text
     .replace(/due:\d{4}-\d{2}-\d{2}/g, "")
     .replace(/rec:\S+/g, "")
+    .replace(/status:\S+/g, "")
     .replace(/\+\S+/g, "")
     .replace(/@\S+/g, "")
     .replace(/\s+/g, " ").trim();
