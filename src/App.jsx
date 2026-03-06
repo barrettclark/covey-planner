@@ -447,7 +447,9 @@ export default function App() {
   function addTask(priority) {
     if (!form.text.trim()) return;
     const id = nextId.current++;
-    const parts = [`(${priority === "?" ? "C" : priority})`, form.text.trim()];
+    const hasRec = !!form.rec.trim();
+    const assignedPriority = hasRec ? "R" : (priority === "?" ? "C" : priority);
+    const parts = [`(${assignedPriority})`, form.text.trim()];
     if (form.project.trim()) parts.push(`+${form.project.trim()}`);
     if (form.context.trim()) parts.push(`@${form.context.trim()}`);
     if (form.due) parts.push(`due:${form.due}`);
@@ -1417,7 +1419,9 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onToggleInPro
 
   function submitEdit() {
     if (!editForm) return;
-    const parts = [`(${task.priority || "C"})`, editForm.text.trim()];
+    const hasRec = !!editForm.rec.trim();
+    const assignedPriority = hasRec ? "R" : (task.priority || "C");
+    const parts = [`(${assignedPriority})`, editForm.text.trim()];
     editForm.project.trim().split(" ").filter(Boolean).forEach(p => parts.push(`+${p}`));
     editForm.context.trim().split(" ").filter(Boolean).forEach(c => parts.push(`@${c}`));
     if (editForm.due) parts.push(`due:${editForm.due}`);
