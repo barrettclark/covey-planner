@@ -139,6 +139,8 @@ function parseTodoTxt(raw, id) {
   let priority = null;
   const prM = text.match(/^\(([A-Z])\)\s/);
   if (prM) { priority = prM[1]; text = text.slice(4); }
+  // For completed tasks, priority may be stored as pri:X tag instead
+  if (!priority) { const priM = raw.match(/\bpri:([A-Z])\b/); if (priM) priority = priM[1]; }
 
   const crM = text.match(/^(\d{4}-\d{2}-\d{2})\s/);
   if (crM) text = text.slice(11);
@@ -153,6 +155,7 @@ function parseTodoTxt(raw, id) {
     .replace(/due:\d{4}-\d{2}-\d{2}/g, "")
     .replace(/rec:\S+/g, "")
     .replace(/status:\S+/g, "")
+    .replace(/pri:[A-Z]/g, "")
     .replace(/\+\S+/g, "")
     .replace(/@\S+/g, "")
     .replace(/\s+/g, " ").trim();
@@ -163,9 +166,14 @@ function parseTodoTxt(raw, id) {
 
 function taskToTxt(task) {
   let line = task.done ? `x ${new Date().toISOString().split("T")[0]} ` : "";
-  // Always write the stored priority — R tasks stay (R) in the file
-  if (task.priority) line += `(${task.priority}) `;
-  line += task.cleanText;
+  if (task.done) {
+    // Completed: store priority as pri:X tag (SwiftDo-compatible, restorable)
+    if (task.priority) line += task.cleanText + (task.priority ? ` pri:${task.priority}` : "");
+    else line += task.cleanText;
+  } else {
+    if (task.priority) line += `(${task.priority}) `;
+    line += task.cleanText;
+  }
   if (task.projects.length) line += " " + task.projects.map(p => `+${p}`).join(" ");
   if (task.contexts.length) line += " " + task.contexts.map(c => `@${c}`).join(" ");
   if (task.dueDate) line += ` due:${task.dueDate}`;
