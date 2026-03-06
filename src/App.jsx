@@ -484,6 +484,16 @@ export default function App() {
   const activeTasks = todayVisible.filter(t => !t.done);
   const doneTasks = todayVisible.filter(t => t.done);
 
+  // ── App badge (iOS 16.4+ PWA, Chrome on Android/desktop) ──────────────────
+  useEffect(() => {
+    if (!("setAppBadge" in navigator)) return;
+    if (activeTasks.length > 0) {
+      navigator.setAppBadge(activeTasks.length).catch(() => {});
+    } else {
+      navigator.clearAppBadge().catch(() => {});
+    }
+  }, [activeTasks.length]);
+
   const groups = { A:[], B:[], C:[], "?":[],  };
   activeTasks.forEach(t => {
     const ep = effectivePriority(t);
