@@ -411,16 +411,22 @@ export default function App() {
   }, []);
 
   // ── App badging ────────────────────────────────────────────────────────────
-  const activeTasks = (tasks||[]).filter(t => !t.done);
   useEffect(() => {
     if (!("setAppBadge" in navigator)) return;
-    const count = activeTasks.filter(t => {
-      if (t.priority === "R") return effectivePriority(t) === "A" || effectivePriority(t) === "B";
-      return true;
+    const count = (tasks||[]).filter(t => {
+      if (t.done) return false;
+      if (t.thresholdDate && t.thresholdDate > TODAY) return false;
+      if (t.priority === "R") {
+        const ep = effectivePriority(t);
+        return ep === "A" || ep === "B";
+      }
+      // Only count tasks that are due today or overdue (not future-dated or undated)
+      if (!t.dueDate) return false;
+      return t.dueDate <= TODAY;
     }).length;
     if (count > 0) navigator.setAppBadge(count).catch(() => {});
     else navigator.clearAppBadge().catch(() => {});
-  }, [activeTasks.length]);
+  }, [tasks]);
 
   // ── Dropbox OAuth callback ─────────────────────────────────────────────────
   useEffect(() => {
