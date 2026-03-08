@@ -349,7 +349,8 @@ const QUOTES = [
   { text:"The art of being wise is knowing what to overlook.", author:"William James" },
 ];
 
-// ─── App ──────────────────────────────────────────────────────────────────────
+// Contexts that sink to the bottom of their priority group
+const SINK_CONTEXTS = new Set(["delegated", "waiting"]);
 
 export default function App() {
   const hasDropbox = !!loadTokens();
@@ -379,15 +380,17 @@ export default function App() {
   const [searchFocused, setSearchFocused] = useState(false);
   const searchRef = useRef(null);
   // FEAT-06: Undo
-  const [undoStack, setUndoStack] = useState([]); // [{tasks, msg}]
-  const [undoToast, setUndoToast] = useState(null); // {msg, key}
+  const [undoStack, setUndoStack] = useState([]);
+  const [undoToast, setUndoToast] = useState(null);
   const undoTimerRef = useRef(null);
   // FEAT-12: Planning mode
   const [planningMode, setPlanningMode] = useState(false);
-  const [planStep, setPlanStep] = useState(0); // 0=rollover, 1=review-R, 2=confirm-A, 3=done
+  const [planStep, setPlanStep] = useState(0);
   const [planRolloverIds, setPlanRolloverIds] = useState([]);
   // FEAT-11: Keyboard nav
   const [focusedTaskId, setFocusedTaskId] = useState(null);
+  // BUG-06: Touch drag state (shared across all rows via ref, not state — no re-renders during drag)
+  const touchDrag = useRef({ id: null, startY: 0, lastOverId: null, lastOverGroup: null });
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const nextId = useRef(500);
 
@@ -628,6 +631,20 @@ export default function App() {
     return false;
   }
 
+  // FEAT-03: Someday/Maybe — tasks with no due date, no recurrence, priority C or none
+  const somedayTasks = (tasks||[]).filter(t =>
+    !t.done && !t.dueDate && !t.recurrence &&
+    (t.priority === "C" || t.priority === null) &&
+    matchesSearch(t)
+  );
+
+  function promoteToDaily(id) {
+    setTasks(prev => prev.map(t =>
+      t.id === id ? { ...t, dueDate: TODAY, priority: t.priority || "C" } : t
+    ));
+    flash("✓ Moved to today's list");
+  }
+
   // ── Filtering + grouping ──────────────────────────────────────────────────
   function isVisibleToday(task) {
     if (task.done && !showDone) return false;
@@ -656,9 +673,9 @@ export default function App() {
   });
   Object.keys(groups).forEach(k => {
     groups[k].sort((a, b) => {
-      const aDel = a.contexts.includes("delegated") ? 1 : 0;
-      const bDel = b.contexts.includes("delegated") ? 1 : 0;
-      if (aDel !== bDel) return aDel - bDel;          // delegated sinks
+      const aDel = a.contexts.some(c => SINK_CONTEXTS.has(c)) ? 1 : 0;
+      const bDel = b.contexts.some(c => SINK_CONTEXTS.has(c)) ? 1 : 0;
+      if (aDel !== bDel) return aDel - bDel;          // sink contexts go last
       const ka = dueSortKey(a), kb = dueSortKey(b);
       if (ka !== kb) return ka - kb;                   // overdue/today first
       if (ka === 2) return a.dueDate.localeCompare(b.dueDate); // future: by date
@@ -687,6 +704,58 @@ export default function App() {
   // After any drag reorder, write fresh seq numbers so the new order persists to Dropbox
   function resequence(arr) {
     return arr.map((t, i) => ({ ...t, seq: i + 1 }));
+  }
+
+  // ── BUG-06: Touch drag handlers (passed to each Row) ─────────────────────
+  function handleTouchDragStart(taskId, e) {
+    touchDrag.current = { id: taskId, startY: e.touches[0].clientY, lastOverId: null, lastOverGroup: null };
+    setDragId(taskId);
+  }
+
+  function handleTouchDragMove(e) {
+    const touch = e.touches[0];
+    // Find element under finger (must ignore the dragged element itself)
+    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    if (!el) return;
+
+    // Walk up to find a data-taskid or data-group attribute
+    let node = el;
+    let foundTaskId = null, foundGroup = null;
+    while (node && node !== document.body) {
+      if (node.dataset?.taskid) { foundTaskId = parseInt(node.dataset.taskid); break; }
+      if (node.dataset?.group)  { foundGroup  = node.dataset.group;            break; }
+      node = node.parentElement;
+    }
+
+    if (foundTaskId && foundTaskId !== touchDrag.current.id) {
+      if (touchDrag.current.lastOverId !== foundTaskId) {
+        touchDrag.current.lastOverId = foundTaskId;
+        touchDrag.current.lastOverGroup = null;
+        setDragOverId(foundTaskId);
+        setDragOverGroup(null);
+      }
+    } else if (foundGroup) {
+      if (touchDrag.current.lastOverGroup !== foundGroup) {
+        touchDrag.current.lastOverGroup = foundGroup;
+        touchDrag.current.lastOverId = null;
+        setDragOverGroup(foundGroup);
+        setDragOverId(null);
+      }
+    }
+  }
+
+  function handleTouchDragEnd() {
+    const { id, lastOverId, lastOverGroup } = touchDrag.current;
+    touchDrag.current = { id: null, startY: 0, lastOverId: null, lastOverGroup: null };
+    if (!id) { setDragId(null); setDragOverId(null); setDragOverGroup(null); return; }
+
+    if (lastOverId) {
+      onDrop(lastOverId);
+    } else if (lastOverGroup) {
+      onDropGroup(lastOverGroup);
+    } else {
+      setDragId(null); setDragOverId(null); setDragOverGroup(null);
+    }
   }
 
   function onDrop(targetId) {
@@ -993,7 +1062,11 @@ export default function App() {
 
               {/* Tabs */}
               <div style={{ display:"flex", borderTop:"1px solid #2e2010" }}>
-                {[["daily","📋 Today"],["weekly","📅 Week Ahead"]].map(([v,label]) => (
+                {[
+                  ["daily",   "📋 Today"],
+                  ["weekly",  "📅 Week Ahead"],
+                  ["someday", `💭 Someday/Maybe${somedayTasks.length > 0 ? ` (${somedayTasks.length})` : ""}`],
+                ].map(([v,label]) => (
                   <button key={v} onClick={() => setView(v)} style={{
                     background: view===v ? "#f2ede4" : "transparent",
                     color: view===v ? "#1e1810" : "#a89070",
@@ -1100,6 +1173,9 @@ export default function App() {
                     dragOverGroup={dragOverGroup} setDragOverGroup={setDragOverGroup}
                     setDragId={setDragId} setDragOverId={setDragOverId}
                     onDrop={onDrop} onDropGroup={onDropGroup}
+                    onTouchDragStart={handleTouchDragStart}
+                    onTouchDragMove={handleTouchDragMove}
+                    onTouchDragEnd={handleTouchDragEnd}
                     allProjects={allProj} allContexts={allCtx}
                     focusedTaskId={focusedTaskId} setFocusedTaskId={setFocusedTaskId}
                     searchQuery={q}
@@ -1269,6 +1345,138 @@ export default function App() {
                         );
                       })}
                     </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ── SOMEDAY/MAYBE VIEW ── */}
+            {view === "someday" && tasks !== null && (
+              <>
+                <div style={{ marginBottom:18 }}>
+                  <div style={{ fontSize:13, color:"#5a4a38", lineHeight:1.6, maxWidth:560, marginBottom:16 }}>
+                    Tasks here have no due date and no priority pressure — things you might want to do someday,
+                    but aren't committing to yet. Promote any to today's list when you're ready to act on it.
+                  </div>
+
+                  {/* Add to Someday form */}
+                  {addingFor === "someday" ? (
+                    <TaskForm
+                      meta={PMETA["C"]} form={form} setForm={setForm}
+                      onSubmit={() => {
+                        if (!form.text.trim()) return;
+                        const id = nextId.current++;
+                        const parts = ["(C)", form.text.trim()];
+                        if (form.project.trim()) parts.push(`+${form.project.trim()}`);
+                        if (form.context.trim()) parts.push(`@${form.context.trim()}`);
+                        // Intentionally no due date — that's the point of Someday
+                        setTasks(prev => {
+                          const maxSeq = prev.reduce((m, t) => Math.max(m, t.seq ?? 0), 0);
+                          const parsed = parseTodoTxt(parts.join(" "), id);
+                          return [...prev, { ...parsed, seq: maxSeq + 1 }];
+                        });
+                        setForm({ text:"", due:"", project:"", context:"", rec:"", inProgress:false });
+                        setAddingFor(null);
+                      }}
+                      onCancel={() => setAddingFor(null)}
+                      submitLabel="Add to Someday"
+                      allProjects={allProj} allContexts={allCtx}
+                    />
+                  ) : (
+                    <button onClick={() => setAddingFor("someday")}
+                      style={{ display:"flex", alignItems:"center", gap:6, background:"#eef7f2",
+                        border:"1px dashed #9ecfb5", borderRadius:6, padding:"8px 14px",
+                        cursor:"pointer", fontSize:13, color:"#2a7048", fontFamily:"inherit" }}>
+                      <span style={{ fontSize:18, lineHeight:1 }}>+</span> Add to Someday/Maybe
+                    </button>
+                  )}
+                </div>
+
+                {somedayTasks.length === 0 ? (
+                  <div style={{ padding:"40px 0", textAlign:"center" }}>
+                    <div style={{ fontSize:32, marginBottom:12 }}>💭</div>
+                    <div style={{ fontSize:15, color:"#8a7060", marginBottom:6 }}>
+                      {searchQuery ? "No Someday tasks match your search." : "Your Someday/Maybe list is empty."}
+                    </div>
+                    {!searchQuery && (
+                      <div style={{ fontSize:13, color:"#aaa", maxWidth:400, margin:"0 auto", lineHeight:1.6 }}>
+                        Capture ideas, vague intentions, and "one day" goals here without the pressure of a deadline.
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(260px, 1fr))", gap:10 }}>
+                    {somedayTasks.map(task => {
+                      const isEdit = editingId === task.id;
+                      return (
+                        <div key={task.id} style={{ background:"#fdf6ed", border:"1px solid #ddc898",
+                          borderRadius:8, overflow:"hidden",
+                          boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}>
+                          {isEdit ? (
+                            <div style={{ padding:12 }}>
+                              <TaskForm
+                                meta={PMETA["C"]} form={(() => {
+                                  // Inline edit form bootstrap — use task values if editForm not ready
+                                  return {
+                                    text: task.cleanText, due: task.dueDate||"",
+                                    rec: task.recurrence||"",
+                                    project: task.projects.join(" "),
+                                    context: task.contexts.join(" "),
+                                    inProgress: task.inProgress||false,
+                                  };
+                                })()}
+                                setForm={() => {}}  // handled by Row's internal state
+                                onSubmit={() => {}} onCancel={() => setEditingId(null)}
+                                submitLabel="Save" allProjects={allProj} allContexts={allCtx}
+                              />
+                            </div>
+                          ) : (
+                            <>
+                              <div style={{ padding:"12px 14px 8px" }}>
+                                <div style={{ fontSize:14, color:"#1e1810", lineHeight:1.5, marginBottom:6,
+                                  cursor:"pointer" }}
+                                  onClick={() => setEditingId(task.id)}>
+                                  {searchQuery ? highlight(task.cleanText, searchQuery) : task.cleanText}
+                                </div>
+                                {(task.projects.length > 0 || task.contexts.length > 0) && (
+                                  <div style={{ display:"flex", gap:4, flexWrap:"wrap" }}>
+                                    {task.projects.map(p => (
+                                      <span key={p} style={{ fontSize:10, fontFamily:"monospace",
+                                        color:"#3558b0", background:"#e8f0fe", padding:"1px 5px", borderRadius:3 }}>
+                                        {searchQuery ? highlight(`+${p}`, searchQuery) : `+${p}`}
+                                      </span>
+                                    ))}
+                                    {task.contexts.map(c => (
+                                      <span key={c} style={{ fontSize:10, fontFamily:"monospace",
+                                        color:"#2a7048", background:"#eef7f2", padding:"1px 5px", borderRadius:3 }}>
+                                        {searchQuery ? highlight(`@${c}`, searchQuery) : `@${c}`}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                              <div style={{ borderTop:"1px solid #e8d8b0", display:"flex", alignItems:"center", padding:"6px 10px", gap:6 }}>
+                                <button onClick={() => promoteToDaily(task.id)}
+                                  style={{ flex:1, background:"#2a7048", color:"#fff", border:"none",
+                                    borderRadius:4, padding:"5px 8px", cursor:"pointer", fontSize:11,
+                                    fontFamily:"inherit", textAlign:"center" }}>
+                                  📋 Do Today
+                                </button>
+                                <button onClick={() => setEditingId(task.id)}
+                                  style={{ background:"none", border:"1px solid #ddc898", borderRadius:4,
+                                    padding:"5px 8px", cursor:"pointer", fontSize:11,
+                                    color:"#8a7060", fontFamily:"inherit" }}>
+                                  Edit
+                                </button>
+                                <button onClick={() => deleteTask(task.id)}
+                                  style={{ background:"none", border:"none", cursor:"pointer",
+                                    fontSize:14, color:"#ccc", padding:"0 4px" }} title="Delete">✕</button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </>
@@ -1559,14 +1767,27 @@ export default function App() {
 
               <HelpDivider />
 
+              <HelpSection title="Someday / Maybe">
+                <p style={hp}>The <strong>💭 Someday/Maybe</strong> tab holds tasks with no due date and no priority pressure — ideas, vague intentions, and "one day" goals you're not committing to yet. They don't appear in the daily list and have no deadline.</p>
+                <ul style={ul}>
+                  <li style={li}>Click <strong>+ Add to Someday/Maybe</strong> to capture a thought without scheduling it.</li>
+                  <li style={li}>Click <strong>📋 Do Today</strong> on any card to move it to today's active list (sets due date to today, keeps C priority).</li>
+                  <li style={li}>Click the task text to edit it inline, or ✕ to delete.</li>
+                  <li style={li}>Tasks automatically graduate from Someday to the daily list when you give them a due date from the edit form.</li>
+                </ul>
+                <p style={hp}>A task with priority A or B, or a recurring task, will never appear in Someday — those always live in the daily list.</p>
+              </HelpSection>
+
+              <HelpDivider />
+
               <HelpSection title="Drag to Reprioritize">
                 <p style={hp}>Every task has a <Code>⠿</Code> drag handle on the left. You can:</p>
                 <ul style={ul}>
-                  <li style={li}><strong>Reorder within a group</strong> — drag a task up or down.</li>
+                  <li style={li}><strong>Reorder within a group</strong> — drag a task up or down. The new order is saved to Dropbox via the <Code>seq:</Code> tag so it persists across devices.</li>
                   <li style={li}><strong>Move between groups</strong> — drag onto a different group's header or between tasks in another group. Priority letter updates automatically.</li>
                   <li style={li}><strong>Recurring tasks</strong> — dragging an R task to a new group opens a reschedule prompt. Enter a new due date to shift the recurrence chain forward.</li>
+                  <li style={li}><strong>iOS touch drag</strong> — press and hold the <Code>⠿</Code> handle, then drag. Move slowly; the target row highlights as you hover over it. Release to drop.</li>
                 </ul>
-                <p style={hp}>On desktop, drag handles respond to mouse drag. On iOS, use the keyboard shortcuts or the edit form to change priority.</p>
               </HelpSection>
 
               <HelpDivider />
@@ -1625,6 +1846,23 @@ x 2026-03-05 Task text pri:A`
 
               <HelpDivider />
 
+              <HelpSection title="Sink Contexts (@delegated, @waiting)">
+                <p style={hp}>Tasks tagged <Code>@delegated</Code> or <Code>@waiting</Code> automatically sort to the bottom of their priority group, below all other tasks regardless of due date. This keeps them out of the way while still visible.</p>
+                <ul style={ul}>
+                  <li style={li}><Code>@delegated</Code> — you've handed this off; you're watching for completion.</li>
+                  <li style={li}><Code>@waiting</Code> — you're blocked until someone else acts. (Dependency tracking for waiting tasks is on the future roadmap.)</li>
+                </ul>
+                <p style={hp}>Within the sink group, tasks still sort overdue → today → future → no date, so you'll notice if something becomes urgent.</p>
+              </HelpSection>
+
+              <HelpDivider />
+
+              <HelpSection title="Cross-Device Order (seq:)">
+                <p style={hp}>When you drag to reorder, the app writes a <Code>seq:N</Code> tag to every task in the file. Other todo.txt apps silently ignore this tag. When you open the app on another device, it reads the seq numbers and restores your exact drag order — no manual resorting needed.</p>
+              </HelpSection>
+
+              <HelpDivider />
+
               <HelpSection title="Dropbox Setup & Reconnecting">
                 <ul style={ul}>
                   <li style={li}>Click <strong>🔗 Connect Dropbox</strong> to authorize. You'll be redirected to Dropbox and back — this only happens once.</li>
@@ -1655,11 +1893,13 @@ x 2026-03-05 Task text pri:A`
 function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, onAdd,
   editingId, setEditingId, onToggle, onToggleInProgress, onDelete, onSaveEdit,
   dragId, dragOverId, dragOverGroup, setDragOverGroup, setDragId, setDragOverId, onDrop, onDropGroup,
+  onTouchDragStart, onTouchDragMove, onTouchDragEnd,
   allProjects, allContexts, focusedTaskId, setFocusedTaskId, searchQuery }) {
   const headerIsTarget = dragOverGroup === priority;
   return (
     <div style={{ marginBottom:16 }}>
       <div
+        data-group={priority}
         onDragOver={e => { e.preventDefault(); setDragOverGroup(priority); }}
         onDragLeave={() => setDragOverGroup(null)}
         onDrop={e => { e.preventDefault(); onDropGroup(priority); }}
@@ -1702,6 +1942,9 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
                 onDragStart={() => setDragId(task.id)}
                 onDragOver={() => setDragOverId(task.id)}
                 onDrop={() => onDrop(task.id)}
+                onTouchDragStart={onTouchDragStart}
+                onTouchDragMove={onTouchDragMove}
+                onTouchDragEnd={onTouchDragEnd}
                 allProjects={allProjects} allContexts={allContexts}
                 focusedTaskId={focusedTaskId} setFocusedTaskId={setFocusedTaskId}
                 searchQuery={searchQuery}
@@ -1797,29 +2040,30 @@ function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allPro
 function Row({ task, idx, meta, groupPriority, editingId, setEditingId,
   onToggle, onToggleInProgress, onDelete, onSaveEdit, onCancelEdit,
   dragId, dragOverId, onDragStart, onDragOver, onDrop,
+  onTouchDragStart, onTouchDragMove, onTouchDragEnd,
   allProjects, allContexts, focusedTaskId, setFocusedTaskId, searchQuery }) {
   const isEditing  = editingId === task.id;
   const isFocused  = focusedTaskId === task.id;
   const overdue    = task.dueDate && task.dueDate < TODAY && !task.done;
   const dueToday   = task.dueDate === TODAY && !task.done;
 
-  // FEAT-05: touch drag state
-  const touchStartY = useRef(null);
-  const touchDragging = useRef(false);
-
+  // BUG-06: Proper touch drag — attach touchmove to window while dragging this row
+  const isTouchDragging = useRef(false);
   function handleTouchStart(e) {
-    touchStartY.current = e.touches[0].clientY;
-    touchDragging.current = false;
+    isTouchDragging.current = true;
+    onTouchDragStart(task.id, e);
+    // Attach move listener globally so it tracks finger even outside this element
+    window.addEventListener("touchmove", handleGlobalTouchMove, { passive: false });
+    window.addEventListener("touchend",  handleGlobalTouchEnd,  { once: true });
   }
-  function handleTouchMove(e) {
-    if (touchStartY.current === null) return;
-    const dy = Math.abs(e.touches[0].clientY - touchStartY.current);
-    if (dy > 8) { touchDragging.current = true; onDragStart(); }
+  function handleGlobalTouchMove(e) {
+    e.preventDefault(); // prevent page scroll while dragging
+    onTouchDragMove(e);
   }
-  function handleTouchEnd() {
-    touchStartY.current = null;
-    // onDrop is handled by dragOver on target; touch DnD is limited without dnd-kit
-    // This at least gives visual feedback that the handle is interactive
+  function handleGlobalTouchEnd() {
+    isTouchDragging.current = false;
+    window.removeEventListener("touchmove", handleGlobalTouchMove);
+    onTouchDragEnd();
   }
 
   const [editForm, setEditForm] = useState(null);
@@ -1846,6 +2090,7 @@ function Row({ task, idx, meta, groupPriority, editingId, setEditingId,
 
   return (
     <div draggable={!isEditing}
+      data-taskid={task.id}
       onDragStart={onDragStart}
       onDragOver={e => { e.preventDefault(); onDragOver(); }}
       onDrop={onDrop}
@@ -1865,11 +2110,9 @@ function Row({ task, idx, meta, groupPriority, editingId, setEditingId,
         <div style={{ display:"flex", alignItems:"flex-start", padding:"9px 12px", gap:8, transition:"background 0.1s" }}
           onMouseEnter={e => e.currentTarget.style.background = meta.border+"44"}
           onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-          {/* Drag handle — touch events for iOS */}
+          {/* Drag handle — onTouchStart fires only on the handle so accidental scrolls don't trigger drag */}
           <div
             onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
             style={{ color:"#ccc", fontSize:11, paddingTop:3, cursor:"grab", userSelect:"none", flexShrink:0, touchAction:"none" }}>⠿</div>
           <div style={{ minWidth:24, textAlign:"center", fontSize:11, fontWeight:"bold",
             color: task.done ? "#bbb" : meta.accent, paddingTop:3, flexShrink:0 }}>
