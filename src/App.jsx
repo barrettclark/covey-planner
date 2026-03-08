@@ -147,15 +147,12 @@ function parseTodoTxt(raw, id) {
 
   const dueM = raw.match(/due:(\d{4}-\d{2}-\d{2})/);
   const dueDate = dueM ? dueM[1] : null;
-  const threshM = raw.match(/t:(\d{4}-\d{2}-\d{2})/);
-  const threshDate = threshM ? threshM[1] : null;
   const recurrence = parseRecurrence(raw);
   const projects = [...raw.matchAll(/\+(\S+)/g)].map(m => m[1]);
   const contexts = [...raw.matchAll(/@(\S+)/g)].map(m => m[1]);
 
   const cleanText = text
     .replace(/due:\d{4}-\d{2}-\d{2}/g, "")
-    .replace(/t:\d{4}-\d{2}-\d{2}/g, "")
     .replace(/rec:\S+/g, "")
     .replace(/status:\S+/g, "")
     .replace(/pri:[A-Z]/g, "")
@@ -164,23 +161,25 @@ function parseTodoTxt(raw, id) {
     .replace(/\s+/g, " ").trim();
 
   const inProgress = raw.includes("status:inprogress");
-  return { id, priority, cleanText, dueDate, threshDate, recurrence, projects, contexts, done, completedDate, inProgress };
+  return { id, priority, cleanText, dueDate, recurrence, projects, contexts, done, completedDate, inProgress };
 }
 
 function taskToTxt(task) {
-  let line = task.done ? `x ${new Date().toISOString().split("T")[0]} ` : "";
+  // BUG-02 fix: preserve original completion date instead of stamping today
+  let line = task.done ? `x ${task.completedDate || new Date().toISOString().split("T")[0]} ` : "";
   if (task.done) {
     // Completed: store priority as pri:X tag (SwiftDo-compatible, restorable)
-    if (task.priority) line += task.cleanText + (task.priority ? ` pri:${task.priority}` : "");
-    else line += task.cleanText;
+    // BUG-15 fix: cleanText may contain an orphaned pri: tag if task was toggled multiple times — strip it
+    const cleanedText = task.cleanText.replace(/\bpri:[A-Z]\b/g, "").replace(/\s+/g, " ").trim();
+    line += task.priority ? `${cleanedText} pri:${task.priority}` : cleanedText;
   } else {
+    // BUG-15 fix: active tasks must never carry a pri: tag
     if (task.priority) line += `(${task.priority}) `;
-    line += task.cleanText;
+    line += task.cleanText.replace(/\bpri:[A-Z]\b/g, "").replace(/\s+/g, " ").trim();
   }
   if (task.projects.length) line += " " + task.projects.map(p => `+${p}`).join(" ");
   if (task.contexts.length) line += " " + task.contexts.map(c => `@${c}`).join(" ");
   if (task.dueDate) line += ` due:${task.dueDate}`;
-  if (task.threshDate) line += ` t:${task.threshDate}`;
   if (task.recurrence) line += ` rec:${task.recurrence}`;
   if (task.inProgress && !task.done) line += ` status:inprogress`;
   return line;
@@ -216,18 +215,6 @@ function advanceDate(from, rec) {
   return d.toISOString().split("T")[0];
 }
 
-// Suggest a t: threshold date proportional to how far out the due date is
-function suggestThreshold(dueDate) {
-  if (!dueDate) return "";
-  const days = Math.round((new Date(dueDate + "T12:00:00") - new Date(TODAY + "T12:00:00")) / 86400000);
-  if (days < 14) return "";
-  const d = new Date(dueDate + "T12:00:00");
-  if (days < 30)  { d.setDate(d.getDate() - 7);  }  // 2–4 weeks out → surface 1w before
-  else if (days < 90) { d.setDate(d.getDate() - 14); }  // 1–3 months out → surface 2w before
-  else { d.setMonth(d.getMonth() - 1); }               // 3+ months out → surface 1m before
-  return d.toISOString().split("T")[0];
-}
-
 function weekDates() {
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() + i);
@@ -250,18 +237,23 @@ function fmtDayNum(iso) {
 }
 
 // ─── Effective priority for recurring tasks ───────────────────────────────────
-// R tasks are promoted at display time only. The file always stores (R).
-//   due today or overdue → promoted to A
-//   due tomorrow         → promoted to B
-//   further out          → hidden from daily view
-
 function effectivePriority(task) {
   if (task.priority !== "R") return task.priority;
-  if (!task.dueDate) return "R"; // no due date, stay in R bucket
+  if (!task.dueDate) return "R";
   const tomorrow = advanceDate(TODAY, "1d");
   if (task.dueDate <= TODAY) return "A";
   if (task.dueDate === tomorrow) return "B";
-  return null; // not yet visible
+  return null;
+}
+
+// ─── Due-date sort weight within a group ─────────────────────────────────────
+// Returns a numeric sort key: lower = higher in list
+// overdue → 0, due today → 1, due future → 2 (by date), no due → 3
+function dueSortKey(task) {
+  if (!task.dueDate) return 3;
+  if (task.dueDate < TODAY) return 0;
+  if (task.dueDate === TODAY) return 1;
+  return 2;
 }
 
 // ─── Sample data ──────────────────────────────────────────────────────────────
@@ -299,8 +291,11 @@ const PMETA = {
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  // BUG-04/05 fix: if Dropbox is connected, start with null (loading) not sample data.
+  // Sample data is only used as the initial state when there is no Dropbox connection.
+  const hasDropbox = !!loadTokens();
   const [tasks, setTasks] = useState(() =>
-    SAMPLE.map((raw, i) => parseTodoTxt(raw, i + 1))
+    hasDropbox ? null : SAMPLE.map((raw, i) => parseTodoTxt(raw, i + 1))
   );
   const [view, setView] = useState("daily");
   const [showDone, setShowDone] = useState(false);
@@ -308,25 +303,24 @@ export default function App() {
   const [filterProj, setFilterProj] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [addingFor, setAddingFor] = useState(null);
-  const [form, setForm] = useState({ text:"", due:"", thresh:"", project:"", context:"", rec:"" });
+  const [form, setForm] = useState({ text:"", due:"", project:"", context:"", rec:"", inProgress: false });
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const [showHelp, setShowHelp] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [dbxConnected, setDbxConnected] = useState(!!loadTokens());
-  const [dbxStatus, setDbxStatus] = useState(null); // "loading"|"saving"|"saved"|"error"|string
+  const [dbxStatus, setDbxStatus] = useState(null);
   const [fileHandle, setFileHandle] = useState(null);
   const [fileName, setFileName] = useState(null);
   const [saveMsg, setSaveMsg] = useState(null);
   const [dragId, setDragId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
   const [dragOverGroup, setDragOverGroup] = useState(null);
-  // reschedule prompt: { id, newPriority } — shown when dragging a recurring task cross-group
   const [reschedulePrompt, setReschedulePrompt] = useState(null);
   const [rescheduleDate, setRescheduleDate] = useState("");
   const nextId = useRef(500);
 
-  const allCtx = [...new Set(tasks.flatMap(t => t.contexts))].sort();
-  const allProj = [...new Set(tasks.flatMap(t => t.projects))].sort();
+  const allCtx = [...new Set((tasks || []).flatMap(t => t.contexts))].sort();
+  const allProj = [...new Set((tasks || []).flatMap(t => t.projects))].sort();
 
   // ── Dropbox OAuth callback handling ───────────────────────────────────────
 
@@ -334,7 +328,6 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
     if (!code) return;
-    // Clean the URL immediately so a refresh doesn't re-trigger
     window.history.replaceState({}, "", window.location.pathname);
     exchangeCode(code).then(tokens => {
       saveTokens({
@@ -349,8 +342,6 @@ export default function App() {
       console.error("Dropbox auth error:", e);
     });
   }, []);
-
-  // ── Auto-load from Dropbox on connect ─────────────────────────────────────
 
   useEffect(() => {
     if (dbxConnected) loadFromDropbox();
@@ -389,16 +380,15 @@ export default function App() {
     }
   }, []);
 
-  // Auto-save to Dropbox whenever tasks change (debounced 1.5s)
   const saveTimer = useRef(null);
   useEffect(() => {
-    if (!dbxConnected) return;
+    if (!dbxConnected || tasks === null) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => saveToDropbox(tasks), 1500);
     return () => clearTimeout(saveTimer.current);
   }, [tasks, dbxConnected]);
 
-  // ── Local file fallback (used when not connected to Dropbox) ──────────────
+  // ── Local file fallback ────────────────────────────────────────────────────
 
   async function openFile() {
     try {
@@ -418,6 +408,7 @@ export default function App() {
   }
 
   async function saveFile() {
+    if (!tasks) return;
     const txt = sortedTxt(tasks);
     if (fileHandle) {
       try {
@@ -464,7 +455,12 @@ export default function App() {
   }
 
   function saveEdit(id, raw) {
-    setTasks(prev => prev.map(t => t.id === id ? { ...parseTodoTxt(raw, id), done: t.done } : t));
+    // BUG-02 fix: preserve done state AND original completion date
+    setTasks(prev => prev.map(t => {
+      if (t.id !== id) return t;
+      const parsed = parseTodoTxt(raw, id);
+      return { ...parsed, done: t.done, completedDate: t.completedDate };
+    }));
     setEditingId(null);
   }
 
@@ -477,10 +473,10 @@ export default function App() {
     if (form.project.trim()) parts.push(`+${form.project.trim()}`);
     if (form.context.trim()) parts.push(`@${form.context.trim()}`);
     if (form.due) parts.push(`due:${form.due}`);
-    if (form.thresh) parts.push(`t:${form.thresh}`);
     if (form.rec.trim()) parts.push(`rec:${form.rec.trim()}`);
+    if (form.inProgress) parts.push(`status:inprogress`);
     setTasks(prev => [...prev, parseTodoTxt(parts.join(" "), id)]);
-    setForm({ text:"", due:"", thresh:"", project:"", context:"", rec:"" });
+    setForm({ text:"", due:"", project:"", context:"", rec:"", inProgress: false });
     setAddingFor(null);
   }
 
@@ -490,39 +486,44 @@ export default function App() {
     if (task.done && !showDone) return false;
     if (filterCtx && !task.contexts.includes(filterCtx)) return false;
     if (filterProj && !task.projects.includes(filterProj)) return false;
-    // Hide if threshold date is in the future
-    if (!task.done && task.threshDate && task.threshDate > TODAY) return false;
-    // R tasks: only show if effectivePriority resolves to A or B (due today/tomorrow)
     if (task.priority === "R" && !task.done) {
       return effectivePriority(task) === "A" || effectivePriority(task) === "B";
     }
     return true;
   }
 
-  const todayVisible = tasks.filter(isVisibleToday);
+  const todayVisible = (tasks || []).filter(isVisibleToday);
   const activeTasks = todayVisible.filter(t => !t.done);
   const doneTasks = todayVisible.filter(t => t.done);
 
-  // ── App badge (iOS 16.4+ PWA, Chrome on Android/desktop) ──────────────────
-  const badgeCount = tasks.filter(t =>
-    !t.done &&
-    t.dueDate && t.dueDate <= TODAY &&
-    (!t.threshDate || t.threshDate <= TODAY)
-  ).length;
   useEffect(() => {
     if (!("setAppBadge" in navigator)) return;
-    if (badgeCount > 0) {
-      navigator.setAppBadge(badgeCount).catch(() => {});
+    if (activeTasks.length > 0) {
+      navigator.setAppBadge(activeTasks.length).catch(() => {});
     } else {
       navigator.clearAppBadge().catch(() => {});
     }
-  }, [badgeCount]);
+  }, [activeTasks.length]);
 
-  const groups = { A:[], B:[], C:[], "?":[],  };
+  // ── Group + sort by due date within each group ────────────────────────────
+  const groups = { A:[], B:[], C:[], "?":[] };
   activeTasks.forEach(t => {
     const ep = effectivePriority(t);
     const k = ep && PMETA[ep] && ep !== "R" ? ep : (t.priority && PMETA[t.priority] && t.priority !== "R" ? t.priority : "?");
     groups[k].push(t);
+  });
+
+  // Sort each group: overdue first, due today second, future by date, no due last.
+  // Stable sort preserves drag-order within the same due-date tier.
+  Object.keys(groups).forEach(k => {
+    groups[k].sort((a, b) => {
+      const ka = dueSortKey(a);
+      const kb = dueSortKey(b);
+      if (ka !== kb) return ka - kb;
+      // Within the "future" tier (key === 2), sort by date ascending
+      if (ka === 2) return a.dueDate.localeCompare(b.dueDate);
+      return 0; // preserve existing order otherwise
+    });
   });
 
   // ── Weekly ─────────────────────────────────────────────────────────────────
@@ -536,16 +537,11 @@ export default function App() {
       if (t.dueDate === date) return true;
       if (date === TODAY && t.dueDate && t.dueDate < TODAY) return true;
       return false;
-    }).map(t => ({
-      ...t,
-      // Flag tasks whose threshold hasn't arrived yet — shown muted in weekly
-      threshPending: !!(t.threshDate && t.threshDate > date),
-    }));
+    });
   }
 
-  // Drop onto a task (reorder within group, or cross-group reprioritize)
   function onDrop(targetId) {
-    if (!dragId || dragId === targetId) { setDragId(null); setDragOverId(null); return; }
+    if (!tasks || !dragId || dragId === targetId) { setDragId(null); setDragOverId(null); return; }
     const dragged = tasks.find(t => t.id === dragId);
     const target  = tasks.find(t => t.id === targetId);
     if (!dragged || !target) { setDragId(null); setDragOverId(null); return; }
@@ -554,10 +550,8 @@ export default function App() {
     const targetEP  = effectivePriority(target)  || target.priority  || "?";
 
     if (draggedEP !== targetEP) {
-      // Cross-group drop — reprioritize
       applyReprioritize(dragged, targetEP, targetId);
     } else {
-      // Same group — reorder only
       setTasks(prev => {
         const arr = [...prev];
         const fi = arr.findIndex(t => t.id === dragId);
@@ -570,9 +564,8 @@ export default function App() {
     setDragId(null); setDragOverId(null);
   }
 
-  // Drop onto a group header
   function onDropGroup(targetPriority) {
-    if (!dragId) { setDragOverGroup(null); return; }
+    if (!tasks || !dragId) { setDragOverGroup(null); return; }
     const dragged = tasks.find(t => t.id === dragId);
     if (!dragged) { setDragId(null); setDragOverGroup(null); return; }
     const draggedEP = effectivePriority(dragged) || dragged.priority || "?";
@@ -584,7 +577,6 @@ export default function App() {
 
   function applyReprioritize(dragged, newPriority, insertBeforeId) {
     if (dragged.priority === "R") {
-      // Recurring: show reschedule prompt instead of changing priority
       setReschedulePrompt({ id: dragged.id, newPriority, insertBeforeId });
       setRescheduleDate(dragged.dueDate || TODAY);
     } else {
@@ -618,11 +610,9 @@ export default function App() {
     setRescheduleDate("");
   }
 
-  const exportTxt = sortedTxt(tasks).trimEnd();
+  const exportTxt = tasks ? sortedTxt(tasks).trimEnd() : "";
   const todayLabel = new Date().toLocaleDateString("en-US",
     { weekday:"long", month:"long", day:"numeric", year:"numeric" });
-
-  // ── Daily quote (rotates by day of year) ──────────────────────────────────
 
   const QUOTES = [
     { text: "The key is not to prioritize what's on your schedule, but to schedule your priorities.", author: "Stephen Covey" },
@@ -664,25 +654,20 @@ export default function App() {
   const dayOfYear = Math.floor((new Date() - new Date(new Date().getFullYear(), 0, 0)) / 86400000);
   const todayQuote = QUOTES[dayOfYear % QUOTES.length];
 
-  // ── NASA APOD ─────────────────────────────────────────────────────────────
-
   const [apod, setApod] = useState(null);
   const [apodError, setApodError] = useState(false);
 
   useEffect(() => {
-    // Cache by date so we only fetch once per day
     const cacheKey = `apod_${TODAY}`;
     const cached = localStorage.getItem(cacheKey);
     if (cached) { try { setApod(JSON.parse(cached)); return; } catch {} }
     fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&date=${TODAY}`)
       .then(r => r.json())
       .then(data => {
-        // Only use if it's a photo (not a video)
         if (data.media_type === "image") {
           setApod(data);
           localStorage.setItem(cacheKey, JSON.stringify(data));
         } else {
-          // Try yesterday if today is a video
           return fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&count=8`)
             .then(r => r.json())
             .then(arr => {
@@ -724,12 +709,18 @@ export default function App() {
           .nodue-grid { display: flex !important; }
           .nodue-stack { display: none !important; }
         }
+        input, textarea, select {
+          color: #1e1810 !important;
+          -webkit-text-fill-color: #1e1810 !important;
+        }
+        input::placeholder, textarea::placeholder {
+          color: #9a8a78 !important;
+          -webkit-text-fill-color: #9a8a78 !important;
+          opacity: 1;
+        }
       `}</style>
 
-      {/* ── Full-page two-column layout ── */}
       <div className="app-layout">
-
-        {/* ── Left: task column (header + content) ── */}
         <div className="task-col">
 
           {/* Header */}
@@ -773,7 +764,7 @@ export default function App() {
                         {!isMobile && <HBtn onClick={saveFile}>{fileHandle ? "💾 Save" : "⬇ Download"}</HBtn>}
                       </>
                   }
-                  <HBtn onClick={() => setShowDone(!showDone)}>{showDone ? "Hide Done" : `Done (${tasks.filter(t=>t.done).length})`}</HBtn>
+                  <HBtn onClick={() => setShowDone(!showDone)}>{showDone ? "Hide Done" : `Done (${(tasks||[]).filter(t=>t.done).length})`}</HBtn>
                   <HBtn onClick={() => setShowExport(!showExport)}>View todo.txt</HBtn>
                   <button onClick={() => setShowHelp(true)} title="Help" style={{
                     background:"none", border:"1px solid #3a2e20", borderRadius:"50%",
@@ -815,6 +806,29 @@ export default function App() {
           {/* Main content */}
           <div className="task-col-inner" style={{ padding:"22px 24px 60px", flex:1 }}>
 
+        {/* BUG-04: Loading skeleton shown while Dropbox data is being fetched */}
+        {tasks === null && (
+          <div style={{ opacity:0.5 }}>
+            {["A","B","C"].map(p => (
+              <div key={p} style={{ marginBottom:16 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
+                  <div style={{ width:22, height:22, borderRadius:"50%", background:"#d8d0c4" }} />
+                  <div style={{ width:120, height:12, borderRadius:4, background:"#d8d0c4" }} />
+                </div>
+                <div style={{ background:"#ede8de", border:"1px solid #d8d0c4", borderRadius:6, padding:"10px 14px" }}>
+                  {[80,55,70].map((w,i) => (
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
+                      padding:"8px 0", borderTop: i > 0 ? "1px solid #d8d0c4" : "none" }}>
+                      <div style={{ width:16, height:16, borderRadius:3, background:"#d8d0c4", flexShrink:0 }} />
+                      <div style={{ height:12, borderRadius:4, background:"#d8d0c4", width:`${w}%` }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Export */}
         {showExport && (
           <div style={{ background:"#1e1810", borderRadius:6, padding:16, marginBottom:20 }}>
@@ -830,7 +844,6 @@ export default function App() {
         {/* ── DAILY VIEW ── */}
         {view === "daily" && (
           <>
-            {/* Reschedule prompt for recurring tasks dragged cross-group */}
             {reschedulePrompt && (
               <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", zIndex:100,
                 display:"flex", alignItems:"center", justifyContent:"center" }}>
@@ -839,7 +852,7 @@ export default function App() {
                   <div style={{ fontSize:12, letterSpacing:"0.1em", textTransform:"uppercase",
                     color:"#b07010", marginBottom:6 }}>Reschedule Recurring Task</div>
                   <div style={{ fontSize:14, color:"#1e1810", marginBottom:16, lineHeight:1.5 }}>
-                    {tasks.find(t => t.id === reschedulePrompt.id)?.cleanText}
+                    {(tasks || []).find(t => t.id === reschedulePrompt.id)?.cleanText}
                   </div>
                   <div style={{ fontSize:12, color:"#7a5a30", marginBottom:8 }}>
                     New due date — this reanchors the recurrence chain from this date forward:
@@ -877,11 +890,14 @@ export default function App() {
                 <div style={{ background:"#ede8de", border:"1px solid #ccc8be", borderRadius:6, overflow:"hidden" }}>
                   {doneTasks.map((task,idx) => (
                     <Row key={task.id} task={task} idx={idx} meta={{ accent:"#aaa", bg:"#ede8de", border:"#ccc8be", dot:"#aaa" }}
-                      editingId={editingId}
+                      groupPriority={null}
+                      editingId={editingId} setEditingId={setEditingId}
                       onToggle={() => toggleDone(task.id)} onDelete={() => deleteTask(task.id)}
-                      onEdit={() => setEditingId(task.id)} onSaveEdit={raw => saveEdit(task.id, raw)}
+                      onToggleInProgress={() => toggleInProgress(task.id)}
+                      onSaveEdit={raw => saveEdit(task.id, raw)}
                       onCancelEdit={() => setEditingId(null)}
                       dragId={null} dragOverId={null} onDragStart={()=>{}} onDragOver={()=>{}} onDrop={()=>{}}
+                      allProjects={allProj} allContexts={allCtx}
                     />
                   ))}
                 </div>
@@ -897,7 +913,6 @@ export default function App() {
               Tasks due in the next 7 days. Overdue tasks surface under today.
             </div>
 
-            {/* ── Desktop: 7-column grid ── */}
             <div className="week-grid">
               {weekDays.map(date => {
                 const dt = dayTasks(date);
@@ -920,11 +935,8 @@ export default function App() {
                             <div key={task.id} style={{ marginBottom:5 }}>
                               <div style={{ display:"flex", alignItems:"flex-start", gap:5 }}>
                                 <span style={{ width:6, height:6, borderRadius:"50%", background:m.dot, flexShrink:0, marginTop:4 }} />
-                                <span style={{ fontSize:11, lineHeight:1.35,
-                                  color: task.threshPending ? "#aaa" : (today ? "#c8b89a" : "#3a2e22"),
-                                  fontStyle: task.threshPending ? "italic" : "normal" }}>
+                                <span style={{ fontSize:11, lineHeight:1.35, color: today ? "#c8b89a" : "#3a2e22" }}>
                                   {task.cleanText}
-                                  {task.threshPending && <span style={{ fontSize:9, marginLeft:4 }}>⏳</span>}
                                 </span>
                               </div>
                               {task.inProgress && (
@@ -942,7 +954,6 @@ export default function App() {
               })}
             </div>
 
-            {/* ── Mobile: vertical day list ── */}
             <div className="week-stack">
               {weekDays.map(date => {
                 const dt = dayTasks(date);
@@ -955,7 +966,6 @@ export default function App() {
                     border: today ? "2px solid #b33020" : "1px solid #ccc8be",
                     borderRadius:8, overflow:"hidden",
                   }}>
-                    {/* Day header */}
                     <div style={{
                       display:"flex", alignItems:"center", gap:12,
                       padding:"10px 14px",
@@ -978,23 +988,18 @@ export default function App() {
                         {dt.length === 0 ? "nothing due" : `${dt.length} task${dt.length > 1 ? "s" : ""}`}
                       </div>
                     </div>
-                    {/* Tasks */}
                     {dt.length > 0 && (
                       <div style={{ padding:"8px 14px 10px" }}>
                         {dt.map(task => {
                           const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
                           return (
                             <div key={task.id} style={{ display:"flex", alignItems:"flex-start", gap:10,
-                              padding:"7px 0", borderBottom:`1px solid ${today ? "#2e2010" : "#d8d0c4"}`,
-                              lastChild:{ borderBottom:"none" } }}>
+                              padding:"7px 0", borderBottom:`1px solid ${today ? "#2e2010" : "#d8d0c4"}` }}>
                               <span style={{ width:8, height:8, borderRadius:"50%", background:m.dot,
                                 flexShrink:0, marginTop:5 }} />
                               <div style={{ flex:1 }}>
-                                <div style={{ fontSize:14, lineHeight:1.4,
-                                  color: task.threshPending ? "#aaa" : (today ? "#f2ede4" : "#1e1810"),
-                                  fontStyle: task.threshPending ? "italic" : "normal" }}>
+                                <div style={{ fontSize:14, color: today ? "#f2ede4" : "#1e1810", lineHeight:1.4 }}>
                                   {task.cleanText}
-                                  {task.threshPending && <span style={{ fontSize:11, marginLeft:5 }}>⏳</span>}
                                 </div>
                                 <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:3 }}>
                                   <span style={{ fontSize:10, fontWeight:"bold", color:m.accent,
@@ -1029,15 +1034,13 @@ export default function App() {
               })}
             </div>
 
-            {/* ── No due date ── */}
-            {tasks.filter(t => !t.done && !t.dueDate).length > 0 && (
+            {(tasks || []).filter(t => !t.done && !t.dueDate).length > 0 && (
               <div style={{ marginTop:24 }}>
                 <div style={{ fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase",
                   color:"#999", marginBottom:10 }}>No due date</div>
 
-                {/* Desktop: chips */}
                 <div className="nodue-grid" style={{ flexWrap:"wrap", gap:6 }}>
-                  {tasks.filter(t => !t.done && !t.dueDate).map(task => {
+                  {(tasks || []).filter(t => !t.done && !t.dueDate).map(task => {
                     const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
                     return (
                       <div key={task.id} style={{ background:"#ede8de", border:`1px solid ${m.border}`,
@@ -1050,9 +1053,8 @@ export default function App() {
                   })}
                 </div>
 
-                {/* Mobile: stacked rows */}
                 <div className="nodue-stack" style={{ background:"#ede8de", border:"1px solid #ccc8be", borderRadius:8, overflow:"hidden" }}>
-                  {tasks.filter(t => !t.done && !t.dueDate).map((task, idx) => {
+                  {(tasks || []).filter(t => !t.done && !t.dueDate).map((task, idx) => {
                     const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
                     return (
                       <div key={task.id} style={{ display:"flex", alignItems:"center", gap:10,
@@ -1087,8 +1089,8 @@ export default function App() {
           </div>
         </div>
 
-      </div>{/* end task-col-inner */}
-      </div>{/* end task-col */}
+      </div>
+      </div>
 
         {/* Right: NASA APOD photo panel */}
         <div className="photo-col" style={{ background:"#111" }}>
@@ -1131,7 +1133,7 @@ export default function App() {
           )}
         </div>
 
-      </div>{/* end app-layout */}
+      </div>
 
       {/* ── Help Modal ── */}
       {showHelp && (
@@ -1144,7 +1146,6 @@ export default function App() {
             maxHeight:"88vh", overflowY:"auto", boxShadow:"0 16px 48px rgba(0,0,0,0.35)",
             fontFamily:"'Palatino Linotype','Book Antiqua',Palatino,Georgia,serif"
           }}>
-            {/* Modal header */}
             <div style={{ background:"#1e1810", color:"#f2ede4", padding:"18px 24px",
               borderRadius:"10px 10px 0 0", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
               <div>
@@ -1158,8 +1159,6 @@ export default function App() {
             </div>
 
             <div style={{ padding:"24px 28px 28px" }}>
-
-              {/* Priority system */}
               <HelpSection title="Priority System">
                 <p style={hp}>Tasks are grouped into four priority levels, following the Franklin Covey method:</p>
                 <div style={{ display:"flex", flexDirection:"column", gap:8, marginTop:10 }}>
@@ -1178,24 +1177,22 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-                <p style={{ ...hp, marginTop:10 }}>Within each group, tasks are numbered (A1, A2, A3…) by their order. Drag to reorder.</p>
+                <p style={{ ...hp, marginTop:10 }}>Within each group, tasks due today or overdue sort to the top automatically. Drag to reorder within that.</p>
               </HelpSection>
 
               <HelpDivider />
 
-              {/* Drag to reprioritize */}
               <HelpSection title="Drag to Reprioritize">
                 <p style={hp}>Every task has a <Code>⠿</Code> drag handle on the left. You can:</p>
                 <ul style={ul}>
                   <li style={li}><strong>Reorder within a group</strong> — drag a task up or down to change its number (A1 → A2 etc.)</li>
-                  <li style={li}><strong>Move between groups</strong> — drag a task onto a different group's header (the header highlights with a dashed outline) or drop it between tasks in another group. The priority letter updates automatically.</li>
+                  <li style={li}><strong>Move between groups</strong> — drag a task onto a different group's header or drop it between tasks in another group. The priority letter updates automatically.</li>
                   <li style={li}><strong>Recurring tasks</strong> — dragging an R task to a new group opens a reschedule prompt. Enter a new due date to shift the entire recurrence chain forward from that date.</li>
                 </ul>
               </HelpSection>
 
               <HelpDivider />
 
-              {/* todo.txt format */}
               <HelpSection title="todo.txt Format">
                 <p style={hp}>This app reads and writes the standard todo.txt format, compatible with SwiftDo, vim, and the Obsidian todo.txt plugin. Each task is one line:</p>
                 <div style={{ background:"#1e1810", borderRadius:6, padding:"12px 16px", margin:"12px 0" }}>
@@ -1214,17 +1211,10 @@ x 2026-03-05 (A) Completed task`
                   <li style={li}><Code>rec:1w</Code> — recurrence (see below)</li>
                   <li style={li}><Code>x 2026-03-05</Code> — completed tasks start with x and a date</li>
                 </ul>
-                <p style={hp}>
-                  <a href="https://github.com/todotxt/todo.txt" target="_blank" rel="noreferrer"
-                    style={{ color:"#3558b0", textDecoration:"none", borderBottom:"1px solid #9db5e0" }}>
-                    Full todo.txt specification on GitHub ↗
-                  </a>
-                </p>
               </HelpSection>
 
               <HelpDivider />
 
-              {/* Recurrence */}
               <HelpSection title="Recurring Task Syntax">
                 <p style={hp}>Add a <Code>rec:</Code> tag to any task to make it repeat. When you check it off, the next occurrence is created automatically with an advanced due date.</p>
                 <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"6px 20px", marginTop:10 }}>
@@ -1250,7 +1240,6 @@ x 2026-03-05 (A) Completed task`
 
               <HelpDivider />
 
-              {/* Dropbox */}
               <HelpSection title="Dropbox Setup & Reconnecting">
                 <ul style={ul}>
                   <li style={li}>Click <strong>🔗 Connect Dropbox</strong> to authorize. You'll be redirected to Dropbox and back — this only happens once.</li>
@@ -1260,7 +1249,6 @@ x 2026-03-05 (A) Completed task`
                   <li style={li}>Your auth token is stored in your browser's localStorage — clearing browser data will require reconnecting.</li>
                 </ul>
               </HelpSection>
-
             </div>
 
             <div style={{ padding:"14px 28px 20px", borderTop:"1px solid #e8e0d0", textAlign:"center" }}>
@@ -1286,7 +1274,6 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
   const headerIsTarget = dragOverGroup === priority;
   return (
     <div style={{ marginBottom:16 }}>
-      {/* Header — also a drop target */}
       <div
         onDragOver={e => { e.preventDefault(); setDragOverGroup(priority); }}
         onDragLeave={() => setDragOverGroup(null)}
@@ -1323,6 +1310,7 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
           ? <div style={{ padding:"12px 16px", fontSize:13, color:"#ccc", fontStyle:"italic" }}>No tasks</div>
           : tasks.map((task, idx) => (
               <Row key={task.id} task={task} idx={idx} meta={meta}
+                groupPriority={priority}
                 editingId={editingId} setEditingId={setEditingId}
                 onToggle={() => onToggle(task.id)}
                 onToggleInProgress={() => onToggleInProgress(task.id)}
@@ -1341,10 +1329,9 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
   );
 }
 
-// ─── TaskForm — shared Add / Edit form ────────────────────────────────────────
+// ─── TaskForm ─────────────────────────────────────────────────────────────────
 
 function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allProjects, allContexts }) {
-  // Multi-select for projects and contexts
   const toggleTag = (field, val) => {
     const current = (form[field] || "").split(" ").filter(Boolean);
     const next = current.includes(val) ? current.filter(v => v !== val) : [...current, val];
@@ -1357,37 +1344,26 @@ function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allPro
     <div style={{ background: meta?.bg || "#f5f0e8", border:`1px solid ${meta?.border || "#ddd"}`,
       borderRadius:6, padding:14, marginBottom:8 }}>
 
-      {/* Task description */}
       <input value={form.text} onChange={e => setForm(f => ({...f, text:e.target.value}))}
         onKeyDown={e => { if (e.key==="Enter" && !e.shiftKey) onSubmit(); if (e.key==="Escape") onCancel(); }}
         placeholder="Task description…" autoFocus
         style={{ width:"100%", border:`1px solid ${meta?.border || "#ddd"}`, borderRadius:4,
           padding:"7px 10px", fontSize:14, fontFamily:"inherit", background:"#fff",
-          boxSizing:"border-box", marginBottom:10 }} />
+          color:"#1e1810", boxSizing:"border-box", marginBottom:10 }} />
 
-      {/* Row 1: due date + threshold + rec */}
       <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
         <label style={{ display:"flex", flexDirection:"column", gap:3 }}>
           <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060" }}>Due date</span>
-          <input value={form.due} type="date" onChange={e => {
-            const due = e.target.value;
-            setForm(f => ({ ...f, due, thresh: suggestThreshold(due) }));
-          }} style={mini} />
-        </label>
-        <label style={{ display:"flex", flexDirection:"column", gap:3 }}>
-          <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060" }}>
-            Show from (t:)
-          </span>
-          <input value={form.thresh || ""} type="date" onChange={e => setForm(f => ({...f, thresh: e.target.value}))} style={mini} />
+          <input value={form.due} type="date" onChange={e => setForm(f => ({...f, due:e.target.value}))}
+            style={{ ...mini, color:"#1e1810" }} />
         </label>
         <label style={{ display:"flex", flexDirection:"column", gap:3 }}>
           <span style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060" }}>Recurrence</span>
           <input value={form.rec} onChange={e => setForm(f => ({...f, rec:e.target.value}))}
-            placeholder="e.g. 1w, 1m" style={{ ...mini, width:90 }} />
+            placeholder="e.g. 1w, 1m" style={{ ...mini, width:90, color:"#1e1810" }} />
         </label>
       </div>
 
-      {/* Projects */}
       <div style={{ marginBottom:8 }}>
         <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060", marginBottom:5 }}>
           +Projects
@@ -1405,11 +1381,10 @@ function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allPro
           ))}
           <input value={form.project} onChange={e => setForm(f => ({...f, project:e.target.value}))}
             placeholder="New project…"
-            style={{ ...mini, fontFamily:"monospace", width:120, fontSize:11 }} />
+            style={{ ...mini, fontFamily:"monospace", width:120, fontSize:11, color:"#1e1810" }} />
         </div>
       </div>
 
-      {/* Contexts */}
       <div style={{ marginBottom:12 }}>
         <div style={{ fontSize:10, letterSpacing:"0.08em", textTransform:"uppercase", color:"#8a7060", marginBottom:5 }}>
           @Contexts
@@ -1427,7 +1402,7 @@ function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allPro
           ))}
           <input value={form.context} onChange={e => setForm(f => ({...f, context:e.target.value}))}
             placeholder="New context…"
-            style={{ ...mini, fontFamily:"monospace", width:120, fontSize:11 }} />
+            style={{ ...mini, fontFamily:"monospace", width:120, fontSize:11, color:"#1e1810" }} />
         </div>
       </div>
 
@@ -1456,20 +1431,18 @@ function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allPro
 
 // ─── Row ──────────────────────────────────────────────────────────────────────
 
-function Row({ task, idx, meta, editingId, setEditingId, onToggle, onToggleInProgress, onDelete, onSaveEdit, onCancelEdit,
+function Row({ task, idx, meta, groupPriority, editingId, setEditingId, onToggle, onToggleInProgress, onDelete, onSaveEdit, onCancelEdit,
   dragId, dragOverId, onDragStart, onDragOver, onDrop, allProjects, allContexts }) {
   const isEditing = editingId === task.id;
   const overdue = task.dueDate && task.dueDate < TODAY && !task.done;
   const dueToday = task.dueDate === TODAY && !task.done;
 
-  // Edit form state — pre-populated from task
   const [editForm, setEditForm] = useState(null);
   useEffect(() => {
     if (isEditing && !editForm) {
       setEditForm({
         text: task.cleanText,
         due: task.dueDate || "",
-        thresh: task.threshDate || "",
         rec: task.recurrence || "",
         project: task.projects.join(" "),
         context: task.contexts.join(" "),
@@ -1487,7 +1460,6 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onToggleInPro
     editForm.project.trim().split(" ").filter(Boolean).forEach(p => parts.push(`+${p}`));
     editForm.context.trim().split(" ").filter(Boolean).forEach(c => parts.push(`@${c}`));
     if (editForm.due) parts.push(`due:${editForm.due}`);
-    if (editForm.thresh) parts.push(`t:${editForm.thresh}`);
     if (editForm.rec.trim()) parts.push(`rec:${editForm.rec.trim()}`);
     if (editForm.inProgress) parts.push(`status:inprogress`);
     onSaveEdit(parts.join(" "));
@@ -1520,9 +1492,8 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onToggleInPro
           <div style={{ color:"#ccc", fontSize:11, paddingTop:3, cursor:"grab", userSelect:"none", flexShrink:0 }}>⠿</div>
           <div style={{ minWidth:24, textAlign:"center", fontSize:11, fontWeight:"bold",
             color: task.done ? "#bbb" : meta.accent, paddingTop:3, flexShrink:0 }}>
-            {task.done ? "✓" : `${effectivePriority(task) || task.priority || "?"}${idx+1}`}
+            {task.done ? "✓" : `${groupPriority || effectivePriority(task) || task.priority || "?"}${idx+1}`}
           </div>
-          {/* Custom checkbox — works on iOS Safari */}
           <div onClick={onToggle} style={{
             marginTop:3, flexShrink:0, cursor:"pointer",
             width:16, height:16, borderRadius:3,
@@ -1533,7 +1504,6 @@ function Row({ task, idx, meta, editingId, setEditingId, onToggle, onToggleInPro
             {task.done && <span style={{ color:"#fff", fontSize:11, lineHeight:1 }}>✓</span>}
           </div>
           <div style={{ flex:1, minWidth:0 }}>
-            {/* Clicking the task text opens the editor */}
             <div onClick={() => setEditingId(task.id)}
               style={{ fontSize:14, lineHeight:1.4, cursor:"pointer",
                 textDecoration: task.done ? "line-through" : "none",
@@ -1607,9 +1577,11 @@ function Chip({ label, active, color, onClick }) {
   );
 }
 
+// ─── FIXED: explicit color on all inputs ─────────────────────────────────────
 const mini = {
   fontSize:12, padding:"4px 8px", border:"1px solid #ddd",
-  borderRadius:4, fontFamily:"monospace", background:"#fff"
+  borderRadius:4, fontFamily:"monospace", background:"#fff",
+  color:"#1e1810",
 };
 
 // ─── Help modal helpers ───────────────────────────────────────────────────────
