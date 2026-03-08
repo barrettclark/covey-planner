@@ -461,12 +461,19 @@ export default function App() {
     try {
       await dbxUpload(token, sortedTxt(taskList));
       lastSavedAt.current = Date.now();
+      // Advance the poll cursor to after this write so the longpoll
+      // doesn't detect our own upload as a remote change
+      try {
+        const freshToken = await getAccessToken();
+        if (freshToken) pollCursor.current = await dbxGetCursor(freshToken);
+      } catch {}
       setDbxStatus("saved");
     } catch(e) { setDbxStatus("error"); console.error("Dropbox save error:", e); }
   }, []);
 
   const saveTimer = useRef(null);
-  const lastSavedAt = useRef(0); // timestamp of most recent upload we initiated
+  const lastSavedAt = useRef(0);
+  const pollCursor  = useRef(null); // shared between saveToDropbox and the poll loop
   useEffect(() => {
     if (!dbxConnected || tasks === null) return;
     clearTimeout(saveTimer.current);
@@ -475,29 +482,35 @@ export default function App() {
   }, [tasks, dbxConnected]);
 
   // ── Dropbox longpoll: real-time updates on desktop ─────────────────────────
-  const pollAbort = useRef(null);
   useEffect(() => {
     if (!dbxConnected) return;
     let cancelled = false;
-    pollAbort.current?.abort();
-    const controller = new AbortController();
-    pollAbort.current = controller;
 
     async function poll() {
       try {
         const token = await getAccessToken();
         if (!token || cancelled) return;
-        const cursor = await dbxGetCursor(token);
+        // Use shared cursor if saveToDropbox already advanced it, otherwise fetch fresh
+        if (!pollCursor.current) {
+          pollCursor.current = await dbxGetCursor(token);
+        }
         while (!cancelled) {
+          const cursor = pollCursor.current;
           const result = await dbxLongpoll(cursor);
           if (cancelled) break;
           if (result.backoff) await new Promise(r => setTimeout(r, result.backoff * 1000));
           if (result.changes) {
-            // Only reload if we haven't just saved ourselves (within 3s)
+            // 10s guard: covers 1.5s debounce + upload time + any slow connection
             const msSinceSave = Date.now() - lastSavedAt.current;
-            if (msSinceSave > 3000) {
+            if (msSinceSave > 10000) {
               await loadFromDropbox();
             }
+            // Always advance cursor past this change (our write or theirs)
+            // so we don't re-detect it on the next loop iteration
+            try {
+              const t = await getAccessToken();
+              if (t) pollCursor.current = await dbxGetCursor(t);
+            } catch {}
           }
         }
       } catch (e) {
@@ -505,7 +518,7 @@ export default function App() {
       }
     }
     poll();
-    return () => { cancelled = true; pollAbort.current?.abort(); };
+    return () => { cancelled = true; pollCursor.current = null; };
   }, [dbxConnected]);
 
   // ── Local file fallback ────────────────────────────────────────────────────
