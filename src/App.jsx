@@ -7,8 +7,10 @@ const DBX_FILE_PATH  = "/Apps/Obsidian/v1/todo.todotxt";
 const DBX_REDIRECT   = window.location.origin + window.location.pathname;
 const DBX_AUTH_URL   = "https://www.dropbox.com/oauth2/authorize";
 const DBX_TOKEN_URL  = "https://api.dropboxapi.com/oauth2/token";
-const DBX_UPLOAD_URL = "https://content.dropboxapi.com/2/files/upload";
+const DBX_UPLOAD_URL   = "https://content.dropboxapi.com/2/files/upload";
 const DBX_DOWNLOAD_URL = "https://content.dropboxapi.com/2/files/download";
+const DBX_LIST_URL     = "https://api.dropboxapi.com/2/files/list_folder";
+const DBX_LONGPOLL_URL = "https://notify.dropboxapi.com/2/files/list_folder/longpoll";
 
 function b64url(buf) {
   return btoa(String.fromCharCode(...new Uint8Array(buf)))
@@ -64,6 +66,29 @@ async function getAccessToken() {
   }
   return tokens.access_token;
 }
+async function dbxGetCursor(accessToken) {
+  // Get a cursor for the folder containing the todo file
+  const folder = DBX_FILE_PATH.split("/").slice(0, -1).join("/") || "";
+  const res = await fetch(DBX_LIST_URL + "/get_latest_cursor", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ path: folder, recursive: false }),
+  });
+  if (!res.ok) throw new Error(`cursor failed: ${res.status}`);
+  const data = await res.json();
+  return data.cursor;
+}
+
+async function dbxLongpoll(cursor) {
+  const res = await fetch(DBX_LONGPOLL_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cursor, timeout: 30 }),
+  });
+  if (!res.ok) throw new Error(`longpoll failed: ${res.status}`);
+  return res.json(); // { changes: bool, backoff?: number }
+}
+
 async function dbxDownload(accessToken) {
   const res = await fetch(DBX_DOWNLOAD_URL, {
     method: "POST",
@@ -116,8 +141,10 @@ function parseTodoTxt(raw, id) {
 
   const dueM   = raw.match(/due:(\d{4}-\d{2}-\d{2})/);
   const threshM = raw.match(/t:(\d{4}-\d{2}-\d{2})/);
+  const seqM   = raw.match(/\bseq:(\d+)\b/);
   const dueDate       = dueM    ? dueM[1]    : null;
   const thresholdDate = threshM ? threshM[1] : null;
+  const seq           = seqM    ? parseInt(seqM[1]) : null;
   const recurrence = parseRecurrence(raw);
   const projects = [...raw.matchAll(/\+(\S+)/g)].map(m => m[1]);
   const contexts = [...raw.matchAll(/@(\S+)/g)].map(m => m[1]);
@@ -128,12 +155,13 @@ function parseTodoTxt(raw, id) {
     .replace(/rec:\S+/g, "")
     .replace(/status:\S+/g, "")
     .replace(/pri:[A-Z]/g, "")
+    .replace(/\bseq:\d+\b/g, "")
     .replace(/\+\S+/g, "")
     .replace(/@\S+/g, "")
     .replace(/\s+/g, " ").trim();
 
   const inProgress = raw.includes("status:inprogress");
-  return { id, priority, cleanText, dueDate, thresholdDate, recurrence, projects, contexts, done, completedDate, inProgress };
+  return { id, priority, cleanText, dueDate, thresholdDate, recurrence, projects, contexts, done, completedDate, inProgress, seq };
 }
 
 function taskToTxt(task) {
@@ -154,15 +182,31 @@ function taskToTxt(task) {
   if (task.thresholdDate)    line += ` t:${task.thresholdDate}`;
   if (task.recurrence)       line += ` rec:${task.recurrence}`;
   if (task.inProgress && !task.done) line += ` status:inprogress`;
+  if (task.seq != null)      line += ` seq:${task.seq}`;
   return line;
 }
 
 function sortedTxt(tasks) {
-  return tasks.map(taskToTxt).sort((a, b) => {
+  // Assign seq to any task that doesn't have one yet (new tasks)
+  const withSeq = assignSeq(tasks);
+  return withSeq.map(taskToTxt).sort((a, b) => {
     const aDone = a.startsWith("x "), bDone = b.startsWith("x ");
     if (aDone !== bDone) return aDone ? 1 : -1;
+    // Within active tasks, preserve seq order
+    const aSeq = (a.match(/\bseq:(\d+)\b/) || [])[1];
+    const bSeq = (b.match(/\bseq:(\d+)\b/) || [])[1];
+    if (aSeq && bSeq) return parseInt(aSeq) - parseInt(bSeq);
     return a.localeCompare(b);
   }).join("\n") + "\n";
+}
+
+// Assign sequential seq numbers to tasks that lack them, preserving existing order
+function assignSeq(tasks) {
+  let next = 1;
+  // First pass: find highest existing seq
+  tasks.forEach(t => { if (t.seq != null && t.seq >= next) next = t.seq + 1; });
+  // Second pass: assign seq to tasks missing it
+  return tasks.map(t => t.seq != null ? t : { ...t, seq: next++ });
 }
 
 const TODAY = new Date().toISOString().split("T")[0];
@@ -413,17 +457,53 @@ export default function App() {
     setDbxStatus("saving");
     try {
       await dbxUpload(token, sortedTxt(taskList));
+      lastSavedAt.current = Date.now();
       setDbxStatus("saved");
     } catch(e) { setDbxStatus("error"); console.error("Dropbox save error:", e); }
   }, []);
 
   const saveTimer = useRef(null);
+  const lastSavedAt = useRef(0); // timestamp of most recent upload we initiated
   useEffect(() => {
     if (!dbxConnected || tasks === null) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => saveToDropbox(tasks), 1500);
     return () => clearTimeout(saveTimer.current);
   }, [tasks, dbxConnected]);
+
+  // ── Dropbox longpoll: real-time updates on desktop ─────────────────────────
+  const pollAbort = useRef(null);
+  useEffect(() => {
+    if (!dbxConnected) return;
+    let cancelled = false;
+    pollAbort.current?.abort();
+    const controller = new AbortController();
+    pollAbort.current = controller;
+
+    async function poll() {
+      try {
+        const token = await getAccessToken();
+        if (!token || cancelled) return;
+        const cursor = await dbxGetCursor(token);
+        while (!cancelled) {
+          const result = await dbxLongpoll(cursor);
+          if (cancelled) break;
+          if (result.backoff) await new Promise(r => setTimeout(r, result.backoff * 1000));
+          if (result.changes) {
+            // Only reload if we haven't just saved ourselves (within 3s)
+            const msSinceSave = Date.now() - lastSavedAt.current;
+            if (msSinceSave > 3000) {
+              await loadFromDropbox();
+            }
+          }
+        }
+      } catch (e) {
+        if (!cancelled) console.warn("Dropbox poll error:", e);
+      }
+    }
+    poll();
+    return () => { cancelled = true; pollAbort.current?.abort(); };
+  }, [dbxConnected]);
 
   // ── Local file fallback ────────────────────────────────────────────────────
   async function openFile() {
@@ -524,7 +604,11 @@ export default function App() {
     if (form.due)            parts.push(`due:${form.due}`);
     if (form.rec.trim())     parts.push(`rec:${form.rec.trim()}`);
     if (form.inProgress)     parts.push(`status:inprogress`);
-    setTasks(prev => [...prev, parseTodoTxt(parts.join(" "), id)]);
+    setTasks(prev => {
+      const maxSeq = prev.reduce((m, t) => Math.max(m, t.seq ?? 0), 0);
+      const parsed = parseTodoTxt(parts.join(" "), id);
+      return [...prev, { ...parsed, seq: maxSeq + 1 }];
+    });
     setForm({ text:"", due:"", project:"", context:"", rec:"", inProgress:false });
     setAddingFor(null);
   }
@@ -572,10 +656,15 @@ export default function App() {
   });
   Object.keys(groups).forEach(k => {
     groups[k].sort((a, b) => {
+      const aDel = a.contexts.includes("delegated") ? 1 : 0;
+      const bDel = b.contexts.includes("delegated") ? 1 : 0;
+      if (aDel !== bDel) return aDel - bDel;          // delegated sinks
       const ka = dueSortKey(a), kb = dueSortKey(b);
-      if (ka !== kb) return ka - kb;
-      if (ka === 2) return a.dueDate.localeCompare(b.dueDate);
-      return 0;
+      if (ka !== kb) return ka - kb;                   // overdue/today first
+      if (ka === 2) return a.dueDate.localeCompare(b.dueDate); // future: by date
+      // Same tier: preserve drag order via seq
+      const as = a.seq ?? 99999, bs = b.seq ?? 99999;
+      return as - bs;
     });
   });
 
@@ -595,6 +684,11 @@ export default function App() {
     });
   }
 
+  // After any drag reorder, write fresh seq numbers so the new order persists to Dropbox
+  function resequence(arr) {
+    return arr.map((t, i) => ({ ...t, seq: i + 1 }));
+  }
+
   function onDrop(targetId) {
     if (!tasks || !dragId || dragId === targetId) { setDragId(null); setDragOverId(null); return; }
     const dragged = tasks.find(t => t.id === dragId);
@@ -610,7 +704,7 @@ export default function App() {
         const fi = arr.findIndex(t => t.id === dragId);
         const ti = arr.findIndex(t => t.id === targetId);
         const [moved] = arr.splice(fi, 1); arr.splice(ti, 0, moved);
-        return arr;
+        return resequence(arr);
       });
     }
     setDragId(null); setDragOverId(null);
@@ -637,7 +731,7 @@ export default function App() {
           const ti = arr.findIndex(t => t.id === insertBeforeId);
           const [moved] = arr.splice(fi, 1); arr.splice(ti, 0, moved);
         }
-        return arr;
+        return resequence(arr);
       });
     }
   }
@@ -652,7 +746,7 @@ export default function App() {
         const ti = arr.findIndex(t => t.id === insertBeforeId);
         const [moved] = arr.splice(fi, 1); arr.splice(ti, 0, moved);
       }
-      return arr;
+      return resequence(arr);
     });
     setReschedulePrompt(null); setRescheduleDate("");
   }
