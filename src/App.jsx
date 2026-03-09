@@ -200,7 +200,10 @@ function assignSeq(tasks) {
   return tasks.map(t => t.seq != null ? t : { ...t, seq: next++ });
 }
 
-const TODAY = new Date().toISOString().split("T")[0];
+// Module-level TODAY used by pure functions (advanceDate, effectivePriority, etc.)
+// Inside App, a useEffect refreshes this at midnight and on tab visibility change.
+let TODAY = new Date().toISOString().split("T")[0];
+function getToday() { return new Date().toISOString().split("T")[0]; }
 
 function advanceDate(from, rec) {
   const d = new Date(from + "T12:00:00");
@@ -383,6 +386,20 @@ export default function App() {
   const touchDrag = useRef({ id: null, startY: 0, lastOverId: null, lastOverGroup: null });
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   const nextId = useRef(500);
+
+  // ── Keep TODAY in sync across midnight and tab focus ─────────────────────
+  useEffect(() => {
+    function refresh() { TODAY = getToday(); }
+    function scheduleMidnight() {
+      const now = new Date();
+      const msUntilMidnight =
+        new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1) - now;
+      return setTimeout(() => { refresh(); scheduleMidnight(); }, msUntilMidnight + 100);
+    }
+    const t = scheduleMidnight();
+    document.addEventListener("visibilitychange", refresh);
+    return () => { clearTimeout(t); document.removeEventListener("visibilitychange", refresh); };
+  }, []);
 
   // ── Poll pause: suspend Dropbox longpoll while any task is being edited ───
   // editingId or addingFor being non-null means user is actively editing
@@ -871,6 +888,7 @@ export default function App() {
       } else if (e.key === "e" && focusedTaskId) {
         setEditingId(focusedTaskId);
       } else if (e.key === "n") {
+        setForm(f => ({ ...f, priority: "A" }));
         setAddingFor("A");
       } else if (["1","2","3","4"].includes(e.key) && focusedTaskId) {
         const pMap = { "1":"A", "2":"B", "3":"C", "4":null };
@@ -1309,11 +1327,11 @@ export default function App() {
                     );
                   })}
                 </div>
-                {(tasks||[]).filter(t => !t.done && !t.dueDate).length > 0 && (
+                {(tasks||[]).filter(t => !t.done && !t.dueDate && !(t.thresholdDate && t.thresholdDate > TODAY)).length > 0 && (
                   <div style={{ marginTop:24 }}>
                     <div style={{ fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase", color:"#999", marginBottom:10 }}>No due date</div>
                     <div className="nodue-grid" style={{ flexWrap:"wrap", gap:6 }}>
-                      {(tasks||[]).filter(t => !t.done && !t.dueDate).map(task => {
+                      {(tasks||[]).filter(t => !t.done && !t.dueDate && !(t.thresholdDate && t.thresholdDate > TODAY)).map(task => {
                         const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
                         return (
                           <div key={task.id} style={{ background:"#ede8de", border:`1px solid ${m.border}`,
@@ -1326,7 +1344,7 @@ export default function App() {
                       })}
                     </div>
                     <div className="nodue-stack" style={{ background:"#ede8de", border:"1px solid #ccc8be", borderRadius:8, overflow:"hidden" }}>
-                      {(tasks||[]).filter(t => !t.done && !t.dueDate).map((task, idx) => {
+                      {(tasks||[]).filter(t => !t.done && !t.dueDate && !(t.thresholdDate && t.thresholdDate > TODAY)).map((task, idx) => {
                         const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
                         return (
                           <div key={task.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"11px 14px",
@@ -1920,7 +1938,11 @@ function Group({ priority, meta, tasks, addingFor, setAddingFor, form, setForm, 
           <span style={{ fontSize:11, color:"#aaa", background:"#e5e0d5", borderRadius:10, padding:"1px 7px" }}>{tasks.length}</span>
           {headerIsTarget && <span style={{ fontSize:10, color:meta.accent, fontStyle:"italic" }}>Drop to reprioritize →</span>}
         </div>
-        <button onClick={() => setAddingFor(addingFor===priority ? null : priority)}
+        <button onClick={() => {
+            if (addingFor === priority) { setAddingFor(null); return; }
+            setAddingFor(priority);
+            setForm(f => ({ ...f, priority: priority === "?" ? "?" : priority }));
+          }}
           style={{ background:"none", border:"none", cursor:"pointer", fontSize:20, color:meta.accent,
             lineHeight:1, padding:"0 6px", fontFamily:"inherit" }}>+</button>
       </div>
@@ -1999,6 +2021,7 @@ function TaskForm({ meta, form, setForm, onSubmit, onCancel, submitLabel, allPro
             <option value="A">A — Vital</option>
             <option value="B">B — Important</option>
             <option value="C">C — Nice to Do</option>
+            <option value="R">R — Recurring</option>
             <option value="?">? — Unsorted</option>
           </select>
         </label>
