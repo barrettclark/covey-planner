@@ -1,58 +1,13 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
-  parseTodoTxt, taskToTxt, sortedTxt, assignSeq,
-  advanceDate, getToday, effectivePriority, dueSortKey,
-  fmtDate, fmtWeekday, fmtDayNum, weekDates,
+  fmtDate, fmtWeekday, fmtDayNum, weekDates, effectivePriority, sortedTxt, getToday,
 } from "./todotxt.js";
-import {
-  loadTokens, saveTokens, getAccessToken, startDropboxAuth, exchangeCode,
-  dbxDownload, dbxUpload, dbxGetCursor, dbxLongpoll,
-} from "./dropbox.js";
+import { startDropboxAuth } from "./dropbox.js";
+import { useTaskManager } from "./useTaskManager.js";
 
-// Module-level TODAY — refreshed at midnight and on tab visibility change via useEffect.
-// Passed explicitly to effectivePriority(task, TODAY) and dueSortKey(task, TODAY).
-let TODAY = new Date().toISOString().split("T")[0];
-
-function highlight(text, query) {
-  if (!query) return text;
-  const idx = text.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) return text;
-  return (
-    <>
-      {text.slice(0, idx)}
-      <mark style={{ background:"#ffe082", color:"#1e1810", borderRadius:2, padding:"0 1px" }}>
-        {text.slice(idx, idx + query.length)}
-      </mark>
-      {text.slice(idx + query.length)}
-    </>
-  );
-}
-
-// ─── Sample data ──────────────────────────────────────────────────────────────
-
-const tomorrow = advanceDate(TODAY, "1d");
-const in2 = advanceDate(TODAY, "2d");
-const in4 = advanceDate(TODAY, "4d");
-const in6 = advanceDate(TODAY, "6d");
-const in10 = advanceDate(TODAY, "10d");
-const in14 = advanceDate(TODAY, "14d");
-
-const SAMPLE = [
-  `(A) Call dentist to schedule appointment due:${TODAY} +Health @phone`,
-  `(A) Finish Q1 budget report due:${TODAY} +Work @computer`,
-  `(B) Review team pull requests +Work @computer`,
-  `(B) Order birthday gift for Sarah due:${in4} +Personal @online`,
-  `(C) Clean out garage +Home @home`,
-  `(R) Weekly team standup due:${TODAY} rec:1w +Work @computer`,
-  `(R) Pay credit card due:${tomorrow} rec:1m +Finance @computer`,
-  `(R) Take out trash due:${in2} rec:1w +Home @home`,
-  `(R) Daily journal due:${TODAY} rec:1d +Personal @home`,
-  `(A) Prepare slide deck for Monday meeting due:${in2} +Work @computer`,
-  `(C) Read chapter 4 of Deep Work +Personal @home`,
-  `(B) Schedule oil change due:${in6} +Home @phone`,
-  `(B) Prepare quarterly review t:${in4} due:${in14} +Work @computer`,
-  `(C) Research vacation destinations t:${in10} due:${in14} +Personal`,
-];
+// Module-level TODAY for sub-components (Row overdue/dueToday badges).
+// The authoritative mutable TODAY lives in useTaskManager.js.
+let TODAY = getToday();
 
 // ─── Priority metadata ────────────────────────────────────────────────────────
 
@@ -105,521 +60,123 @@ const QUOTES = [
   { text:"The art of being wise is knowing what to overlook.", author:"William James" },
 ];
 
-const SINK_CONTEXTS = new Set(["delegated", "waiting"]);
+const SINK_CONTEXTS = new Set(["delegated", "waiting"]); // kept for Group sort (render-side)
+
+function highlight(text, query) {
+  if (!query) return text;
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return text;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark style={{ background:"#ffe082", color:"#1e1810", borderRadius:2, padding:"0 1px" }}>
+        {text.slice(idx, idx + query.length)}
+      </mark>
+      {text.slice(idx + query.length)}
+    </>
+  );
+}
 
 export default function App() {
-  const hasDropbox = !!loadTokens();
-  const [tasks,   setTasks]   = useState(() =>
-    hasDropbox ? null : SAMPLE.map((raw, i) => parseTodoTxt(raw, i + 1))
-  );
-  const [view,          setView]          = useState("daily");
-  const [showDone,      setShowDone]      = useState(false);
-  const [filterCtx,     setFilterCtx]     = useState(null);
-  const [filterProj,    setFilterProj]    = useState(null);
-  const [editingId,     setEditingId]     = useState(null);
-  const [addingFor,     setAddingFor]     = useState(null);
-  const [form,          setForm]          = useState({ text:"", due:"", threshold:"", project:"", context:"", rec:"", priority:"C", inProgress:false });
-  const [showHelp,      setShowHelp]      = useState(false);
-  const [showExport,    setShowExport]    = useState(false);
-  const [dbxConnected,  setDbxConnected]  = useState(!!loadTokens());
-  const [dbxStatus,     setDbxStatus]     = useState(null);
-  const [fileHandle,    setFileHandle]    = useState(null);
-  const [saveMsg,       setSaveMsg]       = useState(null);
-  const [dragId,        setDragId]        = useState(null);
-  const [dragOverId,    setDragOverId]    = useState(null);
-  const [dragOverGroup, setDragOverGroup] = useState(null);
-  const [reschedulePrompt, setReschedulePrompt] = useState(null);
-  const [rescheduleDate,   setRescheduleDate]   = useState("");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchFocused, setSearchFocused] = useState(false);
+  const mgr = useTaskManager();
+  const {
+    tasks,
+    editingId, setEditingId,
+    addingFor, setAddingFor,
+    form, setForm,
+    dbxConnected, dbxStatus,
+    fileHandle,
+    saveMsg,
+    isEditing,
+    dragId, setDragId,
+    dragOverId, setDragOverId,
+    dragOverGroup, setDragOverGroup,
+    reschedulePrompt, setReschedulePrompt,
+    rescheduleDate, setRescheduleDate,
+    undoToast, setUndoToast,
+    planningMode, setPlanningMode,
+    planStep, setPlanStep,
+    planRolloverIds,
+    allCtx, allProj,
+    getFilteredViews,
+    toggleDone, deleteTask, toggleInProgress, saveEdit,
+    addTask, addSomedayTask, changePriority,
+    promoteToDaily, makeVisible,
+    openFile, saveFile, disconnectDropbox,
+    doUndo,
+    handleTouchDragStart, handleTouchDragMove, handleTouchDragEnd,
+    onDrop, onDropGroup, confirmReschedule,
+    startPlanningMode, planRolloverTask, advancePlanStep,
+  } = mgr;
+
+  // ── View / search / focus state (render-only, not in hook) ──────────────────
+  const [view,         setView]         = useState("daily");
+  const [showDone,     setShowDone]     = useState(false);
+  const [filterCtx,    setFilterCtx]    = useState(null);
+  const [filterProj,   setFilterProj]   = useState(null);
+  const [showHelp,     setShowHelp]     = useState(false);
+  const [showExport,   setShowExport]   = useState(false);
+  const [searchQuery,  setSearchQuery]  = useState("");
+  const [searchFocused,setSearchFocused]= useState(false);
+  const [focusedTaskId,setFocusedTaskId]= useState(null);
   const searchRef = useRef(null);
-  const [undoStack, setUndoStack] = useState([]);
-  const [undoToast, setUndoToast] = useState(null);
-  const undoTimerRef = useRef(null);
-  const [planningMode, setPlanningMode] = useState(false);
-  const [planStep, setPlanStep] = useState(0);
-  const [planRolloverIds, setPlanRolloverIds] = useState([]);
-  const [focusedTaskId, setFocusedTaskId] = useState(null);
-  const touchDrag = useRef({ id: null, startY: 0, lastOverId: null, lastOverGroup: null });
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  const nextId = useRef(
-    Math.max(0, ...(hasDropbox ? [] : SAMPLE.map((_, i) => i + 1))) + 1
-  );
 
-  // ── Keep TODAY in sync across midnight and tab focus ─────────────────────
-  useEffect(() => {
-    function refresh() { TODAY = getToday(); }
-    function scheduleMidnight() {
-      const now = new Date();
-      const msUntilMidnight =
-        new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1) - now;
-      return setTimeout(() => { refresh(); scheduleMidnight(); }, msUntilMidnight + 100);
-    }
-    const t = scheduleMidnight();
-    document.addEventListener("visibilitychange", refresh);
-    return () => { clearTimeout(t); document.removeEventListener("visibilitychange", refresh); };
-  }, []);
-
-  // ── Poll pause: suspend Dropbox longpoll while any task is being edited ───
-  // editingId or addingFor being non-null means user is actively editing
-  const isEditing = editingId !== null || addingFor !== null;
-  const isEditingRef = useRef(isEditing);
-  useEffect(() => { isEditingRef.current = isEditing; }, [isEditing]);
-
-  const allCtx  = [...new Set((tasks||[]).flatMap(t => t.contexts))].sort();
-  const allProj = [...new Set((tasks||[]).flatMap(t => t.projects))].sort();
-
+  // ── Notification permission request (mobile) ────────────────────────────────
   useEffect(() => {
     if (!isMobile) return;
     if (!("Notification" in window)) return;
     if (Notification.permission === "default") {
-      const t = setTimeout(() => {
-        Notification.requestPermission().catch(() => {});
-      }, 3000);
+      const t = setTimeout(() => { Notification.requestPermission().catch(() => {}); }, 3000);
       return () => clearTimeout(t);
     }
   }, []);
 
+  // ── NASA APOD ────────────────────────────────────────────────────────────────
+  const [apod,      setApod]      = useState(null);
+  const [apodError, setApodError] = useState(false);
   useEffect(() => {
-    if (!("setAppBadge" in navigator)) return;
-    const count = (tasks||[]).filter(t => {
-      if (t.done) return false;
-      if (t.thresholdDate && t.thresholdDate > TODAY) return false;
-      if (t.priority === "R") {
-        const ep = effectivePriority(t, TODAY);
-        return ep === "A" || ep === "B";
-      }
-      if (!t.dueDate) return false;
-      return t.dueDate <= TODAY;
-    }).length;
-    if (count > 0) navigator.setAppBadge(count).catch(() => {});
-    else navigator.clearAppBadge().catch(() => {});
-  }, [tasks]);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("code");
-    if (!code) return;
-    window.history.replaceState({}, "", window.location.pathname);
-    exchangeCode(code).then(tokens => {
-      saveTokens({ access_token: tokens.access_token, refresh_token: tokens.refresh_token,
-        expires_at: Date.now() + (tokens.expires_in || 14400) * 1000 });
-      setDbxConnected(true);
-      loadFromDropbox();
-    }).catch(e => { setDbxStatus("error"); console.error("Dropbox auth error:", e); });
+    const TODAY = mgr.TODAY();
+    const cacheKey = `apod_${TODAY}`;
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) { try { setApod(JSON.parse(cached)); return; } catch {} }
+    fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&date=${TODAY}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.media_type === "image") {
+          setApod(data); localStorage.setItem(cacheKey, JSON.stringify(data));
+        } else {
+          return fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&count=8`)
+            .then(r => r.json())
+            .then(arr => {
+              const photo = arr.find(d => d.media_type === "image");
+              if (photo) { setApod(photo); localStorage.setItem(cacheKey, JSON.stringify(photo)); }
+              else setApodError(true);
+            });
+        }
+      }).catch(() => setApodError(true));
   }, []);
 
-  useEffect(() => { if (dbxConnected) loadFromDropbox(); }, [dbxConnected]);
-
-  async function loadFromDropbox() {
-    setDbxStatus("loading");
-    try {
-      const token = await getAccessToken();
-      if (!token) { setDbxConnected(false); setDbxStatus(null); return; }
-      const text = await dbxDownload(token);
-      const parsed = text.split("\n").filter(l => l.trim()).map((raw, i) => parseTodoTxt(raw, i + 1));
-      setTasks(parsed);
-      nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
-      setDbxStatus("saved");
-      flash("✓ Loaded from Dropbox");
-    } catch(e) {
-      setDbxStatus("error"); flash("⚠ Dropbox load failed"); console.error(e);
-    }
-  }
-
-  const saveToDropbox = useCallback(async (taskList) => {
-    const token = await getAccessToken();
-    if (!token) return;
-    setDbxStatus("saving");
-    try {
-      await dbxUpload(token, sortedTxt(taskList));
-      lastSavedAt.current = Date.now();
-      try {
-        const freshToken = await getAccessToken();
-        if (freshToken) pollCursor.current = await dbxGetCursor(freshToken);
-      } catch {}
-      setDbxStatus("saved");
-    } catch(e) { setDbxStatus("error"); console.error("Dropbox save error:", e); }
-  }, []);
-
-  const saveTimer = useRef(null);
-  const lastSavedAt = useRef(0);
-  const pollCursor  = useRef(null);
-  useEffect(() => {
-    if (!dbxConnected || tasks === null) return;
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => saveToDropbox(tasks), 1500);
-    return () => clearTimeout(saveTimer.current);
-  }, [tasks, dbxConnected]);
-
-  // ── Dropbox longpoll — pauses while user is editing ───────────────────────
-  useEffect(() => {
-    if (!dbxConnected) return;
-    let cancelled = false;
-
-    async function poll() {
-      try {
-        const token = await getAccessToken();
-        if (!token || cancelled) return;
-        if (!pollCursor.current) {
-          pollCursor.current = await dbxGetCursor(token);
-        }
-        while (!cancelled) {
-          // ── POLL PAUSE: if user is actively editing, wait and retry ───────
-          if (isEditingRef.current) {
-            await new Promise(r => setTimeout(r, 1000));
-            continue;
-          }
-          const cursor = pollCursor.current;
-          const result = await dbxLongpoll(cursor);
-          if (cancelled) break;
-          if (result.backoff) await new Promise(r => setTimeout(r, result.backoff * 1000));
-          if (result.changes) {
-            const msSinceSave = Date.now() - lastSavedAt.current;
-            // Only reload if not editing and the change wasn't ours
-            if (msSinceSave > 10000 && !isEditingRef.current) {
-              await loadFromDropbox();
-            }
-            try {
-              const t = await getAccessToken();
-              if (t) pollCursor.current = await dbxGetCursor(t);
-            } catch {}
-          }
-        }
-      } catch (e) {
-        if (!cancelled) console.warn("Dropbox poll error:", e);
-      }
-    }
-    poll();
-    return () => { cancelled = true; pollCursor.current = null; };
-  }, [dbxConnected]);
-
-  async function openFile() {
-    try {
-      const [handle] = await window.showOpenFilePicker({
-        types: [{ description:"todo.txt / todo.todotxt", accept:{ "text/plain":[".txt",".todotxt"] } }],
-      });
-      const file = await handle.getFile();
-      const text = await file.text();
-      const parsed = text.split("\n").filter(l => l.trim()).map((raw, i) => parseTodoTxt(raw, i + 1));
-      setTasks(parsed); nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
-      setFileHandle(handle); flash("✓ Loaded");
-    } catch (e) { if (e.name !== "AbortError") alert("Could not open: " + e.message); }
-  }
-
-  async function saveFile() {
-    if (!tasks) return;
-    const txt = sortedTxt(tasks);
-    if (fileHandle) {
-      try { const w = await fileHandle.createWritable(); await w.write(txt); await w.close(); flash("✓ Saved"); }
-      catch (e) { alert("Save failed: " + e.message); }
-    } else {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([txt], { type:"text/plain" }));
-      a.download = "todo.todotxt"; a.click();
-    }
-  }
-
-  function disconnectDropbox() { localStorage.removeItem("dbx_tokens"); setDbxConnected(false); setDbxStatus(null); }
-  function flash(msg) { setSaveMsg(msg); setTimeout(() => setSaveMsg(null), 2500); }
-
-  function pushUndo(prevTasks, msg) {
-    setUndoStack(s => [...s.slice(-9), { tasks: prevTasks, msg }]);
-    clearTimeout(undoTimerRef.current);
-    const key = Date.now();
-    setUndoToast({ msg, key });
-    undoTimerRef.current = setTimeout(() => setUndoToast(t => t?.key === key ? null : t), 5000);
-  }
-  function doUndo() {
-    setUndoStack(s => {
-      if (!s.length) return s;
-      const last = s[s.length - 1];
-      setTasks(last.tasks);
-      setUndoToast(null);
-      clearTimeout(undoTimerRef.current);
-      return s.slice(0, -1);
-    });
-  }
-
-  function toggleDone(id) {
-    setTasks(prev => {
-      const task = prev.find(t => t.id === id);
-      if (!task) return prev;
-      pushUndo(prev, task.done ? `Reopened: ${task.cleanText}` : `Completed: ${task.cleanText}`);
-      if (!task.done && task.recurrence) {
-        const nid = nextId.current++;
-        const nextDue = advanceDate(task.dueDate || TODAY, task.recurrence);
-        const next = { ...task, id: nid, done: false, completedDate: null, dueDate: nextDue };
-        return prev.map(t => t.id === id ? { ...t, done: true, completedDate: TODAY } : t).concat(next);
-      }
-      return prev.map(t => t.id === id
-        ? { ...t, done: !t.done, completedDate: !t.done ? TODAY : null }
-        : t);
-    });
-  }
-
-  function deleteTask(id) {
-    setTasks(prev => {
-      const task = prev.find(t => t.id === id);
-      if (task) pushUndo(prev, `Deleted: ${task.cleanText}`);
-      return prev.filter(t => t.id !== id);
-    });
-  }
-
-  function toggleInProgress(id) {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, inProgress: !t.inProgress } : t));
-  }
-
-  function saveEdit(id, raw) {
-    setTasks(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      const parsed = parseTodoTxt(raw, id);
-      return { ...parsed, done: t.done, completedDate: t.completedDate };
-    }));
-    setEditingId(null);
-  }
-
-  function addTask(priority) {
-    if (!form.text.trim()) return;
-    const id = nextId.current++;
-    const hasRec = !!form.rec.trim();
-    // Use form.priority if explicitly set, otherwise fall back to the group priority
-    const basePriority = form.priority && form.priority !== "?" ? form.priority : (priority === "?" ? "C" : priority);
-    const assignedPriority = hasRec ? "R" : basePriority;
-    const parts = [`(${assignedPriority})`, form.text.trim()];
-    if (form.project.trim()) parts.push(`+${form.project.trim()}`);
-    if (form.context.trim()) parts.push(`@${form.context.trim()}`);
-    if (form.due)            parts.push(`due:${form.due}`);
-    if (form.threshold)      parts.push(`t:${form.threshold}`);
-    if (form.rec.trim())     parts.push(`rec:${form.rec.trim()}`);
-    if (form.inProgress)     parts.push(`status:inprogress`);
-    setTasks(prev => {
-      const maxSeq = prev.reduce((m, t) => Math.max(m, t.seq ?? 0), 0);
-      const parsed = parseTodoTxt(parts.join(" "), id);
-      return [...prev, { ...parsed, seq: maxSeq + 1 }];
-    });
-    setForm({ text:"", due:"", threshold:"", project:"", context:"", rec:"", priority:"C", inProgress:false });
-    setAddingFor(null);
-  }
-
-  function changePriority(id, newPriority) {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, priority: newPriority || null } : t));
-  }
-
+  // ── Derived views ────────────────────────────────────────────────────────────
   const q = searchQuery.trim().toLowerCase();
-  function matchesSearch(task) {
-    if (!q) return true;
-    if (task.cleanText.toLowerCase().includes(q)) return true;
-    if (task.projects.some(p => p.toLowerCase().includes(q))) return true;
-    if (task.contexts.some(c => c.toLowerCase().includes(q))) return true;
-    if (task.dueDate && task.dueDate.includes(q)) return true;
-    return false;
-  }
+  const { somedayTasks, upcomingTasks, visibleActive, doneTasks, groups, orderedTasks, dayTasks } =
+    getFilteredViews({ searchQuery: q, showDone, filterCtx, filterProj });
 
-  const somedayTasks = (tasks||[]).filter(t =>
-    !t.done && !t.dueDate && !t.recurrence &&
-    (t.priority === "C" || t.priority === null) &&
-    matchesSearch(t)
-  );
+  const weekDays   = weekDates();
+  const exportTxt  = tasks ? sortedTxt(tasks).trimEnd() : "";
+  const todayLabel = new Date().toLocaleDateString("en-US",
+    { weekday:"long", month:"long", day:"numeric", year:"numeric" });
+  const dayOfYear  = Math.floor((new Date() - new Date(new Date().getFullYear(),0,0)) / 86400000);
+  const todayQuote = QUOTES[dayOfYear % QUOTES.length];
+  const TODAY      = mgr.TODAY();
 
-  // ── Upcoming: tasks hidden by a future threshold date ─────────────────────
-  const upcomingTasks = (tasks||[]).filter(t =>
-    !t.done && t.thresholdDate && t.thresholdDate > TODAY && matchesSearch(t)
-  ).sort((a, b) => {
-    // Sort by threshold date ascending, then due date
-    if (a.thresholdDate !== b.thresholdDate) return a.thresholdDate.localeCompare(b.thresholdDate);
-    if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
-    if (a.dueDate) return -1;
-    if (b.dueDate) return 1;
-    return 0;
-  });
-
-  function promoteToDaily(id) {
-    setTasks(prev => prev.map(t =>
-      t.id === id ? { ...t, dueDate: TODAY, priority: t.priority || "C" } : t
-    ));
-    flash("✓ Moved to today's list");
-  }
-
-  // Clear threshold date to make task visible now
-  function makeVisible(id) {
-    setTasks(prev => prev.map(t =>
-      t.id === id ? { ...t, thresholdDate: null } : t
-    ));
-    flash("✓ Task is now visible in daily view");
-  }
-
-  function isVisibleToday(task) {
-    if (task.done && !showDone) return false;
-    if (filterCtx  && !task.contexts.includes(filterCtx))  return false;
-    if (filterProj && !task.projects.includes(filterProj)) return false;
-    if (!matchesSearch(task)) return false;
-    if (task.thresholdDate && task.thresholdDate > TODAY)  return false;
-    if (task.priority === "R" && !task.done) {
-      const ep = effectivePriority(task, TODAY);
-      return ep === "A" || ep === "B";
-    }
-    return true;
-  }
-
-  const todayVisible = (tasks||[]).filter(isVisibleToday);
-  const visibleActive = todayVisible.filter(t => !t.done);
-  const doneTasks     = todayVisible.filter(t =>  t.done);
-
-  const groups = { A:[], B:[], C:[], "?":[] };
-  visibleActive.forEach(t => {
-    const ep = effectivePriority(t, TODAY);
-    const k = ep && PMETA[ep] && ep !== "R" ? ep
-            : (t.priority && PMETA[t.priority] && t.priority !== "R" ? t.priority : "?");
-    groups[k].push(t);
-  });
-  Object.keys(groups).forEach(k => {
-    groups[k].sort((a, b) => {
-      const aDel = a.contexts.some(c => SINK_CONTEXTS.has(c)) ? 1 : 0;
-      const bDel = b.contexts.some(c => SINK_CONTEXTS.has(c)) ? 1 : 0;
-      if (aDel !== bDel) return aDel - bDel;
-      const ka = dueSortKey(a, TODAY), kb = dueSortKey(b, TODAY);
-      if (ka !== kb) return ka - kb;
-      if (ka === 2) return a.dueDate.localeCompare(b.dueDate);
-      const as = a.seq ?? 99999, bs = b.seq ?? 99999;
-      return as - bs;
-    });
-  });
-
-  const orderedTasks = ["A","B","C","?"].flatMap(k => groups[k]);
-
-  const weekDays = weekDates();
-
-  function dayTasks(date) {
-    return (tasks||[]).filter(t => {
-      if (t.done) return false;
-      if (t.priority === "R" && t.dueDate && t.dueDate > date) return false;
-      if (t.dueDate === date) return true;
-      if (date === TODAY && t.dueDate && t.dueDate < TODAY) return true;
-      return false;
-    });
-  }
-
-  function resequence(arr) {
-    return arr.map((t, i) => ({ ...t, seq: i + 1 }));
-  }
-
-  function handleTouchDragStart(taskId, e) {
-    touchDrag.current = { id: taskId, startY: e.touches[0].clientY, lastOverId: null, lastOverGroup: null };
-    setDragId(taskId);
-  }
-
-  function handleTouchDragMove(e) {
-    const touch = e.touches[0];
-    const el = document.elementFromPoint(touch.clientX, touch.clientY);
-    if (!el) return;
-    let node = el;
-    let foundTaskId = null, foundGroup = null;
-    while (node && node !== document.body) {
-      if (node.dataset?.taskid) { foundTaskId = parseInt(node.dataset.taskid); break; }
-      if (node.dataset?.group)  { foundGroup  = node.dataset.group;            break; }
-      node = node.parentElement;
-    }
-    if (foundTaskId && foundTaskId !== touchDrag.current.id) {
-      if (touchDrag.current.lastOverId !== foundTaskId) {
-        touchDrag.current.lastOverId = foundTaskId;
-        touchDrag.current.lastOverGroup = null;
-        setDragOverId(foundTaskId);
-        setDragOverGroup(null);
-      }
-    } else if (foundGroup) {
-      if (touchDrag.current.lastOverGroup !== foundGroup) {
-        touchDrag.current.lastOverGroup = foundGroup;
-        touchDrag.current.lastOverId = null;
-        setDragOverGroup(foundGroup);
-        setDragOverId(null);
-      }
-    }
-  }
-
-  function handleTouchDragEnd() {
-    const { id, lastOverId, lastOverGroup } = touchDrag.current;
-    touchDrag.current = { id: null, startY: 0, lastOverId: null, lastOverGroup: null };
-    if (!id) { setDragId(null); setDragOverId(null); setDragOverGroup(null); return; }
-    if (lastOverId) {
-      onDrop(lastOverId);
-    } else if (lastOverGroup) {
-      onDropGroup(lastOverGroup);
-    } else {
-      setDragId(null); setDragOverId(null); setDragOverGroup(null);
-    }
-  }
-
-  function onDrop(targetId) {
-    if (!tasks || !dragId || dragId === targetId) { setDragId(null); setDragOverId(null); return; }
-    const dragged = tasks.find(t => t.id === dragId);
-    const target  = tasks.find(t => t.id === targetId);
-    if (!dragged || !target) { setDragId(null); setDragOverId(null); return; }
-    const draggedEP = effectivePriority(dragged, TODAY) || dragged.priority || "?";
-    const targetEP  = effectivePriority(target, TODAY)  || target.priority  || "?";
-    if (draggedEP !== targetEP) {
-      applyReprioritize(dragged, targetEP, targetId);
-    } else {
-      setTasks(prev => {
-        const arr = [...prev];
-        const fi = arr.findIndex(t => t.id === dragId);
-        const ti = arr.findIndex(t => t.id === targetId);
-        const [moved] = arr.splice(fi, 1); arr.splice(ti, 0, moved);
-        return resequence(arr);
-      });
-    }
-    setDragId(null); setDragOverId(null);
-  }
-
-  function onDropGroup(targetPriority) {
-    if (!tasks || !dragId) { setDragOverGroup(null); return; }
-    const dragged = tasks.find(t => t.id === dragId);
-    if (!dragged) { setDragId(null); setDragOverGroup(null); return; }
-    const draggedEP = effectivePriority(dragged, TODAY) || dragged.priority || "?";
-    if (draggedEP !== targetPriority) applyReprioritize(dragged, targetPriority, null);
-    setDragId(null); setDragOverGroup(null);
-  }
-
-  function applyReprioritize(dragged, newPriority, insertBeforeId) {
-    if (dragged.priority === "R") {
-      setReschedulePrompt({ id: dragged.id, newPriority, insertBeforeId });
-      setRescheduleDate(dragged.dueDate || TODAY);
-    } else {
-      setTasks(prev => {
-        let arr = prev.map(t => t.id === dragged.id ? { ...t, priority: newPriority === "?" ? null : newPriority } : t);
-        if (insertBeforeId) {
-          const fi = arr.findIndex(t => t.id === dragged.id);
-          const ti = arr.findIndex(t => t.id === insertBeforeId);
-          const [moved] = arr.splice(fi, 1); arr.splice(ti, 0, moved);
-        }
-        return resequence(arr);
-      });
-    }
-  }
-
-  function confirmReschedule() {
-    if (!reschedulePrompt || !rescheduleDate) return;
-    const { id, insertBeforeId } = reschedulePrompt;
-    setTasks(prev => {
-      let arr = prev.map(t => t.id === id ? { ...t, dueDate: rescheduleDate } : t);
-      if (insertBeforeId) {
-        const fi = arr.findIndex(t => t.id === id);
-        const ti = arr.findIndex(t => t.id === insertBeforeId);
-        const [moved] = arr.splice(fi, 1); arr.splice(ti, 0, moved);
-      }
-      return resequence(arr);
-    });
-    setReschedulePrompt(null); setRescheduleDate("");
-  }
-
+  // ── Keyboard shortcuts ───────────────────────────────────────────────────────
   useEffect(() => {
     function handleKey(e) {
       const tag = document.activeElement?.tagName;
       const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
       if (e.key === "/" && !inInput) {
-        e.preventDefault();
-        searchRef.current?.focus();
-        return;
+        e.preventDefault(); searchRef.current?.focus(); return;
       }
       if (e.key === "Escape") {
         if (searchQuery) { setSearchQuery(""); searchRef.current?.blur(); }
@@ -657,61 +214,6 @@ export default function App() {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [focusedTaskId, orderedTasks, editingId, addingFor, searchQuery, planningMode, tasks]);
-
-  function startPlanningMode() {
-    const overdue = (tasks||[]).filter(t =>
-      !t.done && t.dueDate && t.dueDate < TODAY && t.priority !== "R"
-    );
-    setPlanRolloverIds(overdue.map(t => t.id));
-    setPlanStep(0);
-    setPlanningMode(true);
-  }
-
-  function planRolloverTask(id, action) {
-    setTasks(prev => prev.map(t => {
-      if (t.id !== id) return t;
-      if (action === "drop") return { ...t, done: true, completedDate: TODAY };
-      if (action === "defer") return { ...t, dueDate: advanceDate(TODAY, "1d") };
-      return { ...t, dueDate: TODAY };
-    }));
-    setPlanRolloverIds(ids => ids.filter(i => i !== id));
-  }
-
-  function advancePlanStep() {
-    setPlanStep(s => {
-      if (s >= 2) { setPlanningMode(false); return 0; }
-      return s + 1;
-    });
-  }
-
-  const exportTxt  = tasks ? sortedTxt(tasks).trimEnd() : "";
-  const todayLabel = new Date().toLocaleDateString("en-US",
-    { weekday:"long", month:"long", day:"numeric", year:"numeric" });
-  const dayOfYear  = Math.floor((new Date() - new Date(new Date().getFullYear(),0,0)) / 86400000);
-  const todayQuote = QUOTES[dayOfYear % QUOTES.length];
-
-  const [apod, setApod]         = useState(null);
-  const [apodError, setApodError] = useState(false);
-  useEffect(() => {
-    const cacheKey = `apod_${TODAY}`;
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) { try { setApod(JSON.parse(cached)); return; } catch {} }
-    fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&date=${TODAY}`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.media_type === "image") {
-          setApod(data); localStorage.setItem(cacheKey, JSON.stringify(data));
-        } else {
-          return fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&count=8`)
-            .then(r => r.json())
-            .then(arr => {
-              const photo = arr.find(d => d.media_type === "image");
-              if (photo) { setApod(photo); localStorage.setItem(cacheKey, JSON.stringify(photo)); }
-              else setApodError(true);
-            });
-        }
-      }).catch(() => setApodError(true));
-  }, []);
 
   return (
     <div style={{ fontFamily:"'Palatino Linotype','Book Antiqua',Palatino,Georgia,serif",
@@ -1258,20 +760,7 @@ export default function App() {
                   {addingFor === "someday" ? (
                     <TaskForm
                       meta={PMETA["C"]} form={form} setForm={setForm}
-                      onSubmit={() => {
-                        if (!form.text.trim()) return;
-                        const id = nextId.current++;
-                        const parts = ["(C)", form.text.trim()];
-                        if (form.project.trim()) parts.push(`+${form.project.trim()}`);
-                        if (form.context.trim()) parts.push(`@${form.context.trim()}`);
-                        setTasks(prev => {
-                          const maxSeq = prev.reduce((m, t) => Math.max(m, t.seq ?? 0), 0);
-                          const parsed = parseTodoTxt(parts.join(" "), id);
-                          return [...prev, { ...parsed, seq: maxSeq + 1 }];
-                        });
-                        setForm({ text:"", due:"", threshold:"", project:"", context:"", rec:"", priority:"C", inProgress:false });
-                        setAddingFor(null);
-                      }}
+                      onSubmit={addSomedayTask}
                       onCancel={() => setAddingFor(null)}
                       submitLabel="Add to Someday"
                       allProjects={allProj} allContexts={allCtx}
