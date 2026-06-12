@@ -1,260 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import {
+  parseTodoTxt, taskToTxt, sortedTxt, assignSeq,
+  advanceDate, getToday, effectivePriority, dueSortKey,
+  fmtDate, fmtWeekday, fmtDayNum, weekDates,
+} from "./todotxt.js";
+import {
+  loadTokens, saveTokens, getAccessToken, startDropboxAuth, exchangeCode,
+  dbxDownload, dbxUpload, dbxGetCursor, dbxLongpoll,
+} from "./dropbox.js";
 
-// ─── Dropbox PKCE OAuth ───────────────────────────────────────────────────────
-
-const DBX_APP_KEY    = import.meta.env.VITE_DROPBOX_APP_KEY;
-const DBX_FILE_PATH  = "/Apps/Obsidian/v1/todo.todotxt";
-const DBX_REDIRECT   = window.location.origin + window.location.pathname;
-const DBX_AUTH_URL   = "https://www.dropbox.com/oauth2/authorize";
-const DBX_TOKEN_URL  = "https://api.dropboxapi.com/oauth2/token";
-const DBX_UPLOAD_URL   = "https://content.dropboxapi.com/2/files/upload";
-const DBX_DOWNLOAD_URL = "https://content.dropboxapi.com/2/files/download";
-const DBX_LIST_URL     = "https://api.dropboxapi.com/2/files/list_folder";
-const DBX_LONGPOLL_URL = "https://notify.dropboxapi.com/2/files/list_folder/longpoll";
-
-function b64url(buf) {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-async function pkceChallenge() {
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
-  const digest   = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-  return { verifier, challenge: b64url(digest) };
-}
-async function startDropboxAuth() {
-  const { verifier, challenge } = await pkceChallenge();
-  sessionStorage.setItem("dbx_verifier", verifier);
-  const params = new URLSearchParams({
-    client_id: DBX_APP_KEY, response_type: "code", redirect_uri: DBX_REDIRECT,
-    code_challenge: challenge, code_challenge_method: "S256", token_access_type: "offline",
-  });
-  window.location.href = `${DBX_AUTH_URL}?${params}`;
-}
-async function exchangeCode(code) {
-  const verifier = sessionStorage.getItem("dbx_verifier");
-  sessionStorage.removeItem("dbx_verifier");
-  const res = await fetch(DBX_TOKEN_URL, {
-    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ code, grant_type: "authorization_code",
-      client_id: DBX_APP_KEY, redirect_uri: DBX_REDIRECT, code_verifier: verifier }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-async function refreshToken(refresh_token) {
-  const res = await fetch(DBX_TOKEN_URL, {
-    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token, client_id: DBX_APP_KEY }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-function loadTokens() {
-  try { return JSON.parse(localStorage.getItem("dbx_tokens") || "null"); } catch { return null; }
-}
-function saveTokens(tokens) { localStorage.setItem("dbx_tokens", JSON.stringify(tokens)); }
-async function getAccessToken() {
-  let tokens = loadTokens();
-  if (!tokens) return null;
-  if (tokens.expires_at && Date.now() > tokens.expires_at - 60000) {
-    try {
-      const fresh = await refreshToken(tokens.refresh_token);
-      tokens = { ...tokens, access_token: fresh.access_token,
-        expires_at: Date.now() + (fresh.expires_in || 14400) * 1000 };
-      saveTokens(tokens);
-    } catch { return null; }
-  }
-  return tokens.access_token;
-}
-async function dbxGetCursor(accessToken) {
-  const folder = DBX_FILE_PATH.split("/").slice(0, -1).join("/") || "";
-  const res = await fetch(DBX_LIST_URL + "/get_latest_cursor", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ path: folder, recursive: false }),
-  });
-  if (!res.ok) throw new Error(`cursor failed: ${res.status}`);
-  const data = await res.json();
-  return data.cursor;
-}
-
-async function dbxLongpoll(cursor) {
-  const res = await fetch(DBX_LONGPOLL_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cursor, timeout: 30 }),
-  });
-  if (!res.ok) throw new Error(`longpoll failed: ${res.status}`);
-  return res.json();
-}
-
-async function dbxDownload(accessToken) {
-  const res = await fetch(DBX_DOWNLOAD_URL, {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${accessToken}`,
-      "Dropbox-API-Arg": JSON.stringify({ path: DBX_FILE_PATH }) },
-  });
-  if (!res.ok) throw new Error(`Dropbox download failed: ${res.status}`);
-  return res.text();
-}
-async function dbxUpload(accessToken, content) {
-  const res = await fetch(DBX_UPLOAD_URL, {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${accessToken}`,
-      "Dropbox-API-Arg": JSON.stringify({ path: DBX_FILE_PATH, mode: "overwrite", autorename: false, mute: true }),
-      "Content-Type": "application/octet-stream" },
-    body: content,
-  });
-  if (!res.ok) throw new Error(`Dropbox upload failed: ${res.status}`);
-  return res.json();
-}
-
-// ─── todo.txt parser ──────────────────────────────────────────────────────────
-
-function parseRecurrence(raw) {
-  const m = raw.match(/rec:(\d+)(d|w|m|y|wd)|rec:(daily|weekly|monthly|yearly|weekday)/i);
-  if (!m) return null;
-  if (m[3]) {
-    const map = { daily:"1d", weekly:"1w", monthly:"1m", yearly:"1y", weekday:"1wd" };
-    return map[m[3].toLowerCase()];
-  }
-  return `${m[1]}${m[2]}`;
-}
-
-function parseTodoTxt(raw, id) {
-  let text = raw.trim();
-  const done = text.startsWith("x ");
-  if (done) text = text.slice(2).trim();
-
-  let completedDate = null;
-  const cdM = done && text.match(/^(\d{4}-\d{2}-\d{2})\s/);
-  if (cdM) { completedDate = cdM[1]; text = text.slice(11); }
-
-  let priority = null;
-  const prM = text.match(/^\(([A-Z])\)\s/);
-  if (prM) { priority = prM[1]; text = text.slice(4); }
-  if (!priority) { const priM = raw.match(/\bpri:([A-Z])\b/); if (priM) priority = priM[1]; }
-
-  const crM = text.match(/^(\d{4}-\d{2}-\d{2})\s/);
-  if (crM) text = text.slice(11);
-
-  const dueM   = raw.match(/due:(\d{4}-\d{2}-\d{2})/);
-  const threshM = raw.match(/t:(\d{4}-\d{2}-\d{2})/);
-  const seqM   = raw.match(/\bseq:(\d+)\b/);
-  const dueDate       = dueM    ? dueM[1]    : null;
-  const thresholdDate = threshM ? threshM[1] : null;
-  const seq           = seqM    ? parseInt(seqM[1]) : null;
-  const recurrence = parseRecurrence(raw);
-  const projects = [...raw.matchAll(/\+(\S+)/g)].map(m => m[1]);
-  const contexts = [...raw.matchAll(/@(\S+)/g)].map(m => m[1]);
-
-  const cleanText = text
-    .replace(/due:\d{4}-\d{2}-\d{2}/g, "")
-    .replace(/t:\d{4}-\d{2}-\d{2}/g, "")
-    .replace(/rec:\S+/g, "")
-    .replace(/status:\S+/g, "")
-    .replace(/pri:[A-Z]/g, "")
-    .replace(/\bseq:\d+\b/g, "")
-    .replace(/\+\S+/g, "")
-    .replace(/@\S+/g, "")
-    .replace(/\s+/g, " ").trim();
-
-  const inProgress = raw.includes("status:inprogress");
-  return { id, priority, cleanText, dueDate, thresholdDate, recurrence, projects, contexts, done, completedDate, inProgress, seq };
-}
-
-function taskToTxt(task) {
-  let line = task.done ? `x ${task.completedDate || new Date().toISOString().split("T")[0]} ` : "";
-  if (task.done) {
-    const cleanedText = task.cleanText.replace(/\bpri:[A-Z]\b/g, "").replace(/\s+/g, " ").trim();
-    line += task.priority ? `${cleanedText} pri:${task.priority}` : cleanedText;
-  } else {
-    if (task.priority) line += `(${task.priority}) `;
-    line += task.cleanText.replace(/\bpri:[A-Z]\b/g, "").replace(/\s+/g, " ").trim();
-  }
-  if (task.projects.length)  line += " " + task.projects.map(p => `+${p}`).join(" ");
-  if (task.contexts.length)  line += " " + task.contexts.map(c => `@${c}`).join(" ");
-  if (task.dueDate)          line += ` due:${task.dueDate}`;
-  if (task.thresholdDate)    line += ` t:${task.thresholdDate}`;
-  if (task.recurrence)       line += ` rec:${task.recurrence}`;
-  if (task.inProgress && !task.done) line += ` status:inprogress`;
-  if (task.seq != null)      line += ` seq:${task.seq}`;
-  return line;
-}
-
-function sortedTxt(tasks) {
-  const withSeq = assignSeq(tasks);
-  return withSeq.map(taskToTxt).sort((a, b) => {
-    const aDone = a.startsWith("x "), bDone = b.startsWith("x ");
-    if (aDone !== bDone) return aDone ? 1 : -1;
-    const aSeq = (a.match(/\bseq:(\d+)\b/) || [])[1];
-    const bSeq = (b.match(/\bseq:(\d+)\b/) || [])[1];
-    if (aSeq && bSeq) return parseInt(aSeq) - parseInt(bSeq);
-    return a.localeCompare(b);
-  }).join("\n") + "\n";
-}
-
-function assignSeq(tasks) {
-  let next = 1;
-  tasks.forEach(t => { if (t.seq != null && t.seq >= next) next = t.seq + 1; });
-  return tasks.map(t => t.seq != null ? t : { ...t, seq: next++ });
-}
-
-// Module-level TODAY used by pure functions (advanceDate, effectivePriority, etc.)
-// Inside App, a useEffect refreshes this at midnight and on tab visibility change.
+// Module-level TODAY — refreshed at midnight and on tab visibility change via useEffect.
+// Passed explicitly to effectivePriority(task, TODAY) and dueSortKey(task, TODAY).
 let TODAY = new Date().toISOString().split("T")[0];
-function getToday() { return new Date().toISOString().split("T")[0]; }
-
-function advanceDate(from, rec) {
-  const d = new Date(from + "T12:00:00");
-  const m = rec.match(/^(\d+)(d|w|m|y|wd)$/);
-  if (!m) return from;
-  const n = parseInt(m[1]), u = m[2];
-  if (u === "d") d.setDate(d.getDate() + n);
-  else if (u === "w") d.setDate(d.getDate() + n * 7);
-  else if (u === "m") d.setMonth(d.getMonth() + n);
-  else if (u === "y") d.setFullYear(d.getFullYear() + n);
-  else if (u === "wd") {
-    let a = 0;
-    while (a < n) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) a++; }
-  }
-  return d.toISOString().split("T")[0];
-}
-
-function weekDates() {
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(); d.setDate(d.getDate() + i);
-    return d.toISOString().split("T")[0];
-  });
-}
-
-function fmtDate(iso) {
-  if (!iso) return "";
-  const [, m, d] = iso.split("-");
-  return `${parseInt(m)}/${parseInt(d)}`;
-}
-function fmtWeekday(iso) {
-  return new Date(iso + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" });
-}
-function fmtDayNum(iso) { return parseInt(iso.split("-")[2]); }
-
-// ─── Priority helpers ─────────────────────────────────────────────────────────
-
-function effectivePriority(task) {
-  if (task.priority !== "R") return task.priority;
-  if (!task.dueDate) return "R";
-  const tomorrow = advanceDate(TODAY, "1d");
-  if (task.dueDate <= TODAY) return "A";
-  if (task.dueDate === tomorrow) return "B";
-  return null;
-}
-
-function dueSortKey(task) {
-  if (!task.dueDate) return 3;
-  if (task.dueDate < TODAY) return 0;
-  if (task.dueDate === TODAY) return 1;
-  return 2;
-}
 
 function highlight(text, query) {
   if (!query) return text;
@@ -429,7 +186,7 @@ export default function App() {
       if (t.done) return false;
       if (t.thresholdDate && t.thresholdDate > TODAY) return false;
       if (t.priority === "R") {
-        const ep = effectivePriority(t);
+        const ep = effectivePriority(t, TODAY);
         return ep === "A" || ep === "B";
       }
       if (!t.dueDate) return false;
@@ -699,7 +456,7 @@ export default function App() {
     if (!matchesSearch(task)) return false;
     if (task.thresholdDate && task.thresholdDate > TODAY)  return false;
     if (task.priority === "R" && !task.done) {
-      const ep = effectivePriority(task);
+      const ep = effectivePriority(task, TODAY);
       return ep === "A" || ep === "B";
     }
     return true;
@@ -711,7 +468,7 @@ export default function App() {
 
   const groups = { A:[], B:[], C:[], "?":[] };
   visibleActive.forEach(t => {
-    const ep = effectivePriority(t);
+    const ep = effectivePriority(t, TODAY);
     const k = ep && PMETA[ep] && ep !== "R" ? ep
             : (t.priority && PMETA[t.priority] && t.priority !== "R" ? t.priority : "?");
     groups[k].push(t);
@@ -721,7 +478,7 @@ export default function App() {
       const aDel = a.contexts.some(c => SINK_CONTEXTS.has(c)) ? 1 : 0;
       const bDel = b.contexts.some(c => SINK_CONTEXTS.has(c)) ? 1 : 0;
       if (aDel !== bDel) return aDel - bDel;
-      const ka = dueSortKey(a), kb = dueSortKey(b);
+      const ka = dueSortKey(a, TODAY), kb = dueSortKey(b, TODAY);
       if (ka !== kb) return ka - kb;
       if (ka === 2) return a.dueDate.localeCompare(b.dueDate);
       const as = a.seq ?? 99999, bs = b.seq ?? 99999;
@@ -798,8 +555,8 @@ export default function App() {
     const dragged = tasks.find(t => t.id === dragId);
     const target  = tasks.find(t => t.id === targetId);
     if (!dragged || !target) { setDragId(null); setDragOverId(null); return; }
-    const draggedEP = effectivePriority(dragged) || dragged.priority || "?";
-    const targetEP  = effectivePriority(target)  || target.priority  || "?";
+    const draggedEP = effectivePriority(dragged, TODAY) || dragged.priority || "?";
+    const targetEP  = effectivePriority(target, TODAY)  || target.priority  || "?";
     if (draggedEP !== targetEP) {
       applyReprioritize(dragged, targetEP, targetId);
     } else {
@@ -818,7 +575,7 @@ export default function App() {
     if (!tasks || !dragId) { setDragOverGroup(null); return; }
     const dragged = tasks.find(t => t.id === dragId);
     if (!dragged) { setDragId(null); setDragOverGroup(null); return; }
-    const draggedEP = effectivePriority(dragged) || dragged.priority || "?";
+    const draggedEP = effectivePriority(dragged, TODAY) || dragged.priority || "?";
     if (draggedEP !== targetPriority) applyReprioritize(dragged, targetPriority, null);
     setDragId(null); setDragOverGroup(null);
   }
@@ -1255,7 +1012,7 @@ export default function App() {
                         {dt.length === 0
                           ? <div style={{ fontSize:11, color: today ? "#3a2e20" : "#bbb", fontStyle:"italic" }}>—</div>
                           : dt.map(task => {
-                              const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
+                              const m = PMETA[effectivePriority(task, TODAY)] || PMETA[task.priority] || PMETA["?"];
                               return (
                                 <div key={task.id} style={{ marginBottom:5 }}>
                                   <div style={{ display:"flex", alignItems:"flex-start", gap:5 }}>
@@ -1302,7 +1059,7 @@ export default function App() {
                         {dt.length > 0 && (
                           <div style={{ padding:"8px 14px 10px" }}>
                             {dt.map(task => {
-                              const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
+                              const m = PMETA[effectivePriority(task, TODAY)] || PMETA[task.priority] || PMETA["?"];
                               return (
                                 <div key={task.id} style={{ display:"flex", alignItems:"flex-start", gap:10,
                                   padding:"7px 0", borderBottom:`1px solid ${today ? "#2e2010" : "#d8d0c4"}` }}>
@@ -1312,7 +1069,7 @@ export default function App() {
                                     <div style={{ display:"flex", gap:5, flexWrap:"wrap", marginTop:3 }}>
                                       <span style={{ fontSize:10, fontWeight:"bold", color:m.accent,
                                         background: today ? "#2e2010" : "#e8e2d8", padding:"1px 6px", borderRadius:3 }}>
-                                        {effectivePriority(task) || task.priority || "?"}
+                                        {effectivePriority(task, TODAY) || task.priority || "?"}
                                       </span>
                                       {task.inProgress && <span style={{ fontSize:10, color:"#fff", background:"#b07010", borderRadius:3, padding:"1px 6px" }}>▶ in progress</span>}
                                       {task.recurrence && <span style={{ fontSize:10, color: today ? "#6a5040" : "#aaa" }}>↺ {task.recurrence}</span>}
@@ -1334,7 +1091,7 @@ export default function App() {
                     <div style={{ fontSize:11, letterSpacing:"0.12em", textTransform:"uppercase", color:"#999", marginBottom:10 }}>No due date</div>
                     <div className="nodue-grid" style={{ flexWrap:"wrap", gap:6 }}>
                       {(tasks||[]).filter(t => !t.done && !t.dueDate && !(t.thresholdDate && t.thresholdDate > TODAY)).map(task => {
-                        const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
+                        const m = PMETA[effectivePriority(task, TODAY)] || PMETA[task.priority] || PMETA["?"];
                         return (
                           <div key={task.id} style={{ background:"#ede8de", border:`1px solid ${m.border}`,
                             borderRadius:4, padding:"5px 10px", fontSize:12, display:"flex", gap:6, alignItems:"center" }}>
@@ -1347,7 +1104,7 @@ export default function App() {
                     </div>
                     <div className="nodue-stack" style={{ background:"#ede8de", border:"1px solid #ccc8be", borderRadius:8, overflow:"hidden" }}>
                       {(tasks||[]).filter(t => !t.done && !t.dueDate && !(t.thresholdDate && t.thresholdDate > TODAY)).map((task, idx) => {
-                        const m = PMETA[effectivePriority(task)] || PMETA[task.priority] || PMETA["?"];
+                        const m = PMETA[effectivePriority(task, TODAY)] || PMETA[task.priority] || PMETA["?"];
                         return (
                           <div key={task.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"11px 14px",
                             borderTop: idx>0 ? "1px solid #d0c8bc" : "none" }}>
@@ -1737,14 +1494,14 @@ export default function App() {
                   </p>
                   {(() => {
                     const recurringDue = (tasks||[]).filter(t => !t.done && t.priority === "R" &&
-                      (effectivePriority(t) === "A" || effectivePriority(t) === "B"));
+                      (effectivePriority(t, TODAY) === "A" || effectivePriority(t, TODAY) === "B"));
                     if (recurringDue.length === 0) return (
                       <div style={{ padding:"20px 0", textAlign:"center", color:"#8a7060", fontSize:14, fontStyle:"italic" }}>
                         No recurring tasks due today or tomorrow.
                       </div>
                     );
                     return recurringDue.map(t => {
-                      const ep = effectivePriority(t);
+                      const ep = effectivePriority(t, TODAY);
                       const m = PMETA[ep] || PMETA["?"];
                       return (
                         <div key={t.id} style={{ background:m.bg, border:`1px solid ${m.border}`,
@@ -2278,7 +2035,7 @@ function Row({ task, idx, meta, groupPriority, editingId, setEditingId,
             style={{ color:"#ccc", fontSize:11, paddingTop:3, cursor:"grab", userSelect:"none", flexShrink:0, touchAction:"none" }}>⠿</div>
           <div style={{ minWidth:24, textAlign:"center", fontSize:11, fontWeight:"bold",
             color: task.done ? "#bbb" : meta.accent, paddingTop:3, flexShrink:0 }}>
-            {task.done ? "✓" : `${groupPriority || effectivePriority(task) || task.priority || "?"}${idx+1}`}
+            {task.done ? "✓" : `${groupPriority || effectivePriority(task, TODAY) || task.priority || "?"}${idx+1}`}
           </div>
           <div onClick={onToggle} style={{ marginTop:3, flexShrink:0, cursor:"pointer",
             width:16, height:16, borderRadius:3,

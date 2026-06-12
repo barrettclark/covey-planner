@@ -10,126 +10,12 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
-
-// ─── Inline the pure functions from App.jsx ───────────────────────────────────
-// (Copy these verbatim from App.jsx; if the impl changes, update here too.)
+import {
+  parseTodoTxt, taskToTxt, sortedTxt, assignSeq,
+  advanceDate, getToday, effectivePriority, dueSortKey, fmtDate,
+} from "./todotxt.js";
 
 let TODAY = new Date().toISOString().split("T")[0];
-function getToday() { return new Date().toISOString().split("T")[0]; }
-
-function advanceDate(from, rec) {
-  const d = new Date(from + "T12:00:00");
-  const m = rec.match(/^(\d+)(d|w|m|y|wd)$/);
-  if (!m) return from;
-  const n = parseInt(m[1]), u = m[2];
-  if (u === "d") d.setDate(d.getDate() + n);
-  else if (u === "w") d.setDate(d.getDate() + n * 7);
-  else if (u === "m") d.setMonth(d.getMonth() + n);
-  else if (u === "y") d.setFullYear(d.getFullYear() + n);
-  else if (u === "wd") {
-    let a = 0;
-    while (a < n) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) a++; }
-  }
-  return d.toISOString().split("T")[0];
-}
-
-function parseRecurrence(raw) {
-  const m = raw.match(/rec:(\d+)(d|w|m|y|wd)|rec:(daily|weekly|monthly|yearly|weekday)/i);
-  if (!m) return null;
-  if (m[3]) {
-    const map = { daily:"1d", weekly:"1w", monthly:"1m", yearly:"1y", weekday:"1wd" };
-    return map[m[3].toLowerCase()];
-  }
-  return `${m[1]}${m[2]}`;
-}
-
-function parseTodoTxt(raw, id) {
-  let text = raw.trim();
-  const done = text.startsWith("x ");
-  if (done) text = text.slice(2).trim();
-
-  let completedDate = null;
-  const cdM = done && text.match(/^(\d{4}-\d{2}-\d{2})\s/);
-  if (cdM) { completedDate = cdM[1]; text = text.slice(11); }
-
-  let priority = null;
-  const prM = text.match(/^\(([A-Z])\)\s/);
-  if (prM) { priority = prM[1]; text = text.slice(4); }
-  if (!priority) { const priM = raw.match(/\bpri:([A-Z])\b/); if (priM) priority = priM[1]; }
-
-  const crM = text.match(/^(\d{4}-\d{2}-\d{2})\s/);
-  if (crM) text = text.slice(11);
-
-  const dueM    = raw.match(/due:(\d{4}-\d{2}-\d{2})/);
-  const threshM = raw.match(/t:(\d{4}-\d{2}-\d{2})/);
-  const seqM    = raw.match(/\bseq:(\d+)\b/);
-  const dueDate       = dueM    ? dueM[1]    : null;
-  const thresholdDate = threshM ? threshM[1] : null;
-  const seq           = seqM    ? parseInt(seqM[1]) : null;
-  const recurrence = parseRecurrence(raw);
-  const projects = [...raw.matchAll(/\+(\S+)/g)].map(m => m[1]);
-  const contexts = [...raw.matchAll(/@(\S+)/g)].map(m => m[1]);
-
-  const cleanText = text
-    .replace(/due:\d{4}-\d{2}-\d{2}/g, "")
-    .replace(/t:\d{4}-\d{2}-\d{2}/g, "")
-    .replace(/rec:\S+/g, "")
-    .replace(/status:\S+/g, "")
-    .replace(/pri:[A-Z]/g, "")
-    .replace(/\bseq:\d+\b/g, "")
-    .replace(/\+\S+/g, "")
-    .replace(/@\S+/g, "")
-    .replace(/\s+/g, " ").trim();
-
-  const inProgress = raw.includes("status:inprogress");
-  return { id, priority, cleanText, dueDate, thresholdDate, recurrence, projects, contexts, done, completedDate, inProgress, seq };
-}
-
-function taskToTxt(task) {
-  let line = task.done ? `x ${task.completedDate || new Date().toISOString().split("T")[0]} ` : "";
-  if (task.done) {
-    const cleanedText = task.cleanText.replace(/\bpri:[A-Z]\b/g, "").replace(/\s+/g, " ").trim();
-    line += task.priority ? `${cleanedText} pri:${task.priority}` : cleanedText;
-  } else {
-    if (task.priority) line += `(${task.priority}) `;
-    line += task.cleanText.replace(/\bpri:[A-Z]\b/g, "").replace(/\s+/g, " ").trim();
-  }
-  if (task.projects.length)  line += " " + task.projects.map(p => `+${p}`).join(" ");
-  if (task.contexts.length)  line += " " + task.contexts.map(c => `@${c}`).join(" ");
-  if (task.dueDate)          line += ` due:${task.dueDate}`;
-  if (task.thresholdDate)    line += ` t:${task.thresholdDate}`;
-  if (task.recurrence)       line += ` rec:${task.recurrence}`;
-  if (task.inProgress && !task.done) line += ` status:inprogress`;
-  if (task.seq != null)      line += ` seq:${task.seq}`;
-  return line;
-}
-
-function assignSeq(tasks) {
-  let next = 1;
-  tasks.forEach(t => { if (t.seq != null && t.seq >= next) next = t.seq + 1; });
-  return tasks.map(t => t.seq != null ? t : { ...t, seq: next++ });
-}
-
-function sortedTxt(tasks) {
-  const withSeq = assignSeq(tasks);
-  return withSeq.map(taskToTxt).sort((a, b) => {
-    const aDone = a.startsWith("x "), bDone = b.startsWith("x ");
-    if (aDone !== bDone) return aDone ? 1 : -1;
-    const aSeq = (a.match(/\bseq:(\d+)\b/) || [])[1];
-    const bSeq = (b.match(/\bseq:(\d+)\b/) || [])[1];
-    if (aSeq && bSeq) return parseInt(aSeq) - parseInt(bSeq);
-    return a.localeCompare(b);
-  }).join("\n") + "\n";
-}
-
-function effectivePriority(task) {
-  if (task.priority !== "R") return task.priority;
-  if (!task.dueDate) return "R";
-  const tomorrow = advanceDate(TODAY, "1d");
-  if (task.dueDate <= TODAY) return "A";
-  if (task.dueDate === tomorrow) return "B";
-  return null;
-}
 
 // Simulates the addTask() priority logic from App.jsx
 function simulateAddTask({ formPriority, groupPriority, hasRec }) {
@@ -281,28 +167,36 @@ describe("effectivePriority", () => {
   const in2 = advanceDate(TODAY, "2d");
 
   it("returns the priority as-is for non-R tasks", () => {
-    expect(effectivePriority({ priority: "A", dueDate: null })).toBe("A");
-    expect(effectivePriority({ priority: "C", dueDate: tomorrow })).toBe("C");
+    expect(effectivePriority({ priority: "A", dueDate: null }, TODAY)).toBe("A");
+    expect(effectivePriority({ priority: "C", dueDate: tomorrow }, TODAY)).toBe("C");
   });
 
   it("R task due today → A", () => {
-    expect(effectivePriority({ priority: "R", dueDate: TODAY })).toBe("A");
+    expect(effectivePriority({ priority: "R", dueDate: TODAY }, TODAY)).toBe("A");
   });
 
   it("R task overdue → A", () => {
-    expect(effectivePriority({ priority: "R", dueDate: "2026-01-01" })).toBe("A");
+    expect(effectivePriority({ priority: "R", dueDate: "2026-01-01" }, TODAY)).toBe("A");
   });
 
   it("R task due tomorrow → B", () => {
-    expect(effectivePriority({ priority: "R", dueDate: tomorrow })).toBe("B");
+    expect(effectivePriority({ priority: "R", dueDate: tomorrow }, TODAY)).toBe("B");
   });
 
   it("R task due in 2+ days → null (hidden)", () => {
-    expect(effectivePriority({ priority: "R", dueDate: in2 })).toBeNull();
+    expect(effectivePriority({ priority: "R", dueDate: in2 }, TODAY)).toBeNull();
   });
 
   it("R task with no due date → R", () => {
-    expect(effectivePriority({ priority: "R", dueDate: null })).toBe("R");
+    expect(effectivePriority({ priority: "R", dueDate: null }, TODAY)).toBe("R");
+  });
+
+  it("uses the provided today argument rather than ambient date", () => {
+    // Pinned to a fixed future date so this never becomes date-sensitive
+    const task = { priority: "R", dueDate: "2030-06-01" };
+    expect(effectivePriority(task, "2030-06-01")).toBe("A"); // due today
+    expect(effectivePriority(task, "2030-05-31")).toBe("B"); // due tomorrow
+    expect(effectivePriority(task, "2030-05-29")).toBeNull(); // due in 3 days
   });
 });
 
@@ -439,17 +333,11 @@ describe("keyboard shortcut n — priority initialisation (REGRESSION)", () => {
     expect(simulateNKey("?")).toBe("A");
   });
 
-  // Simulates the OLD (broken) behaviour for contrast
-  function simulateNKeyBroken(currentFormPriority) {
-    return simulateAddTask({ formPriority: currentFormPriority, groupPriority: "A", hasRec: false });
-  }
-
-  it("OLD behaviour: stale form.priority would incorrectly propagate", () => {
-    // If form was last reset to "C" and n key didn't update priority,
-    // the C form.priority would override the A group priority
-    expect(simulateNKeyBroken("C")).toBe("C"); // this is the bug
-    expect(simulateNKeyBroken("B")).toBe("B"); // this is the bug
-  });
+  // Old broken behaviour for contrast: if the 'n' key handler didn't update
+  // form.priority, the stale form value would propagate instead of group priority.
+  // e.g. simulateAddTask({ formPriority: "C", groupPriority: "A" }) → "C" (bug)
+  //      simulateAddTask({ formPriority: "B", groupPriority: "A" }) → "B" (bug)
+  // The fix: setForm(f => ({ ...f, priority: "A" })) is now called alongside setAddingFor("A").
 });
 
 // ── BUG-FIX: TaskForm (add form) must include R in priority dropdown ─────────
@@ -516,23 +404,15 @@ describe("TODAY midnight refresh", () => {
     expect(actual === expected || actual === advanceDate(expected, "1d")).toBe(true);
   });
 
-  it("TODAY module var can be reassigned (simulates midnight tick)", () => {
-    const original = TODAY;
-    TODAY = "2099-12-31"; // simulate a midnight reassignment
-    expect(TODAY).toBe("2099-12-31");
-    TODAY = original; // restore
-    expect(TODAY).toBe(original);
-  });
-
   it("effectivePriority uses updated TODAY after simulated midnight tick", () => {
     const original = TODAY;
     // A task due "tomorrow" relative to original TODAY
     const nextDay = advanceDate(TODAY, "1d");
     const task = { priority: "R", dueDate: nextDay };
-    expect(effectivePriority(task)).toBe("B"); // due tomorrow → B
+    expect(effectivePriority(task, TODAY)).toBe("B"); // due tomorrow → B
     // Advance TODAY to nextDay — now the task is due today
     TODAY = nextDay;
-    expect(effectivePriority(task)).toBe("A"); // due today → A
+    expect(effectivePriority(task, TODAY)).toBe("A"); // due today → A
     TODAY = original;
   });
 });
@@ -576,29 +456,23 @@ describe("someday task filtering", () => {
 });
 
 // ─── dueSortKey ───────────────────────────────────────────────────────────────
-function dueSortKey(task) {
-  if (!task.dueDate) return 3;
-  if (task.dueDate < TODAY) return 0;
-  if (task.dueDate === TODAY) return 1;
-  return 2;
-}
 
 describe("dueSortKey", () => {
   it("overdue tasks get key 0 (highest urgency)", () => {
-    expect(dueSortKey({ dueDate: "2020-01-01" })).toBe(0);
+    expect(dueSortKey({ dueDate: "2020-01-01" }, TODAY)).toBe(0);
   });
 
   it("tasks due today get key 1", () => {
-    expect(dueSortKey({ dueDate: TODAY })).toBe(1);
+    expect(dueSortKey({ dueDate: TODAY }, TODAY)).toBe(1);
   });
 
   it("future tasks get key 2", () => {
     const future = advanceDate(TODAY, "5d");
-    expect(dueSortKey({ dueDate: future })).toBe(2);
+    expect(dueSortKey({ dueDate: future }, TODAY)).toBe(2);
   });
 
   it("tasks with no due date get key 3 (lowest urgency)", () => {
-    expect(dueSortKey({ dueDate: null })).toBe(3);
+    expect(dueSortKey({ dueDate: null }, TODAY)).toBe(3);
   });
 
   it("sorts overdue before today before future before no-date", () => {
@@ -608,20 +482,22 @@ describe("dueSortKey", () => {
       { dueDate: TODAY },
       { dueDate: "2020-06-01" },
     ];
-    const sorted = [...tasks].sort((a, b) => dueSortKey(a) - dueSortKey(b));
+    const sorted = [...tasks].sort((a, b) => dueSortKey(a, TODAY) - dueSortKey(b, TODAY));
     expect(sorted[0].dueDate).toBe("2020-06-01");
     expect(sorted[1].dueDate).toBe(TODAY);
     expect(sorted[2].dueDate).toBe(advanceDate(TODAY, "3d"));
     expect(sorted[3].dueDate).toBeNull();
   });
+
+  it("uses the provided today argument rather than ambient date", () => {
+    // Pinned to a fixed future date so this never becomes date-sensitive
+    expect(dueSortKey({ dueDate: "2030-06-01" }, "2030-06-02")).toBe(0); // overdue
+    expect(dueSortKey({ dueDate: "2030-06-01" }, "2030-06-01")).toBe(1); // today
+    expect(dueSortKey({ dueDate: "2030-06-01" }, "2030-05-31")).toBe(2); // future
+  });
 });
 
 // ─── fmtDate ─────────────────────────────────────────────────────────────────
-function fmtDate(iso) {
-  if (!iso) return "";
-  const [, m, d] = iso.split("-");
-  return `${parseInt(m)}/${parseInt(d)}`;
-}
 
 describe("fmtDate", () => {
   it("formats a mid-year date without leading zeros", () => {
@@ -744,7 +620,7 @@ function isVisibleToday(task, { showDone = false, filterCtx = null, filterProj =
   if (!matchesSearchLocal(task)) return false;
   if (task.thresholdDate && task.thresholdDate > TODAY)  return false;
   if (task.priority === "R" && !task.done) {
-    const ep = effectivePriority(task);
+    const ep = effectivePriority(task, TODAY);
     return ep === "A" || ep === "B";
   }
   return true;
