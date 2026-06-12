@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   parseTodoTxt, sortedTxt, advanceDate, getToday,
   effectivePriority, dueSortKey,
@@ -510,8 +510,8 @@ export function useTaskManager() {
   }
 
   // ── Derived views ─────────────────────────────────────────────────────────────
-  const allCtx  = [...new Set((tasks||[]).flatMap(t => t.contexts))].sort();
-  const allProj = [...new Set((tasks||[]).flatMap(t => t.projects))].sort();
+  const allCtx  = useMemo(() => [...new Set((tasks||[]).flatMap(t => t.contexts))].sort(), [tasks]);
+  const allProj = useMemo(() => [...new Set((tasks||[]).flatMap(t => t.projects))].sort(), [tasks]);
 
   function matchesSearch(task, q) {
     if (!q) return true;

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import {
   fmtDate, fmtWeekday, fmtDayNum, weekDates, effectivePriority, sortedTxt, getToday,
 } from "./todotxt.js";
@@ -141,14 +141,22 @@ export default function App() {
     const cached = localStorage.getItem(cacheKey);
     if (cached) { try { setApod(JSON.parse(cached)); return; } catch {} }
     fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&date=${TODAY}`)
-      .then(r => r.json())
+      .then(r => {
+        if (r.status === 429) { setApodError(true); return null; }
+        return r.json();
+      })
       .then(data => {
+        if (!data) return;
         if (data.media_type === "image") {
           setApod(data); localStorage.setItem(cacheKey, JSON.stringify(data));
         } else {
           return fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&count=8`)
-            .then(r => r.json())
+            .then(r => {
+              if (r.status === 429) { setApodError(true); return null; }
+              return r.json();
+            })
             .then(arr => {
+              if (!arr) return;
               const photo = arr.find(d => d.media_type === "image");
               if (photo) { setApod(photo); localStorage.setItem(cacheKey, JSON.stringify(photo)); }
               else setApodError(true);
@@ -162,12 +170,14 @@ export default function App() {
   const { somedayTasks, upcomingTasks, visibleActive, doneTasks, groups, orderedTasks, dayTasks } =
     getFilteredViews({ searchQuery: q, showDone, filterCtx, filterProj });
 
-  const weekDays   = weekDates();
-  const exportTxt  = tasks ? sortedTxt(tasks).trimEnd() : "";
-  const todayLabel = new Date().toLocaleDateString("en-US",
-    { weekday:"long", month:"long", day:"numeric", year:"numeric" });
-  const dayOfYear  = Math.floor((new Date() - new Date(new Date().getFullYear(),0,0)) / 86400000);
-  const todayQuote = QUOTES[dayOfYear % QUOTES.length];
+  const weekDays   = useMemo(() => weekDates(), []);
+  const exportTxt  = useMemo(() => tasks ? sortedTxt(tasks).trimEnd() : "", [tasks]);
+  const todayLabel = useMemo(() => new Date().toLocaleDateString("en-US",
+    { weekday:"long", month:"long", day:"numeric", year:"numeric" }), []);
+  const todayQuote = useMemo(() => {
+    const dayOfYear = Math.floor((new Date() - new Date(new Date().getFullYear(),0,0)) / 86400000);
+    return QUOTES[dayOfYear % QUOTES.length];
+  }, []);
   const TODAY      = mgr.TODAY();
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────────
