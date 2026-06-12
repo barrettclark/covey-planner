@@ -385,7 +385,9 @@ export default function App() {
   const [focusedTaskId, setFocusedTaskId] = useState(null);
   const touchDrag = useRef({ id: null, startY: 0, lastOverId: null, lastOverGroup: null });
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  const nextId = useRef(500);
+  const nextId = useRef(
+    Math.max(0, ...(hasDropbox ? [] : SAMPLE.map((_, i) => i + 1))) + 1
+  );
 
   // ── Keep TODAY in sync across midnight and tab focus ─────────────────────
   useEffect(() => {
@@ -460,7 +462,7 @@ export default function App() {
       const text = await dbxDownload(token);
       const parsed = text.split("\n").filter(l => l.trim()).map((raw, i) => parseTodoTxt(raw, i + 1));
       setTasks(parsed);
-      nextId.current = parsed.length + 100;
+      nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
       setDbxStatus("saved");
       flash("✓ Loaded from Dropbox");
     } catch(e) {
@@ -543,7 +545,7 @@ export default function App() {
       const file = await handle.getFile();
       const text = await file.text();
       const parsed = text.split("\n").filter(l => l.trim()).map((raw, i) => parseTodoTxt(raw, i + 1));
-      setTasks(parsed); nextId.current = parsed.length + 100;
+      setTasks(parsed); nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
       setFileHandle(handle); flash("✓ Loaded");
     } catch (e) { if (e.name !== "AbortError") alert("Could not open: " + e.message); }
   }
@@ -2226,20 +2228,24 @@ function Row({ task, idx, meta, groupPriority, editingId, setEditingId,
   const dueToday   = task.dueDate === TODAY && !task.done;
 
   const isTouchDragging = useRef(false);
+  const touchMoveHandler = useRef(null);
+  const touchEndHandler  = useRef(null);
+
   function handleTouchStart(e) {
     isTouchDragging.current = true;
     onTouchDragStart(task.id, e);
-    window.addEventListener("touchmove", handleGlobalTouchMove, { passive: false });
-    window.addEventListener("touchend",  handleGlobalTouchEnd,  { once: true });
-  }
-  function handleGlobalTouchMove(e) {
-    e.preventDefault();
-    onTouchDragMove(e);
-  }
-  function handleGlobalTouchEnd() {
-    isTouchDragging.current = false;
-    window.removeEventListener("touchmove", handleGlobalTouchMove);
-    onTouchDragEnd();
+
+    touchMoveHandler.current = (ev) => { ev.preventDefault(); onTouchDragMove(ev); };
+    touchEndHandler.current  = () => {
+      isTouchDragging.current = false;
+      window.removeEventListener("touchmove", touchMoveHandler.current);
+      touchMoveHandler.current = null;
+      touchEndHandler.current  = null;
+      onTouchDragEnd();
+    };
+
+    window.addEventListener("touchmove", touchMoveHandler.current, { passive: false });
+    window.addEventListener("touchend",  touchEndHandler.current,  { once: true });
   }
 
   return (
