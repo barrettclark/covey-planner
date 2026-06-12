@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 
 // ─── Dropbox PKCE OAuth ───────────────────────────────────────────────────────
 
-const DBX_APP_KEY    = "fc5cp3nk989ym1q";
+const DBX_APP_KEY    = import.meta.env.VITE_DROPBOX_APP_KEY;
 const DBX_FILE_PATH  = "/Apps/Obsidian/v1/todo.todotxt";
 const DBX_REDIRECT   = window.location.origin + window.location.pathname;
 const DBX_AUTH_URL   = "https://www.dropbox.com/oauth2/authorize";
@@ -1733,29 +1733,32 @@ export default function App() {
                   <p style={{ fontSize:13, color:"#5a4a38", marginTop:0, lineHeight:1.6 }}>
                     These recurring tasks are due today or tomorrow. Review them before starting your day.
                   </p>
-                  {(tasks||[]).filter(t => !t.done && t.priority === "R" &&
-                    (effectivePriority(t) === "A" || effectivePriority(t) === "B")).length === 0 ? (
-                    <div style={{ padding:"20px 0", textAlign:"center", color:"#8a7060", fontSize:14, fontStyle:"italic" }}>
-                      No recurring tasks due today or tomorrow.
-                    </div>
-                  ) : (tasks||[]).filter(t => !t.done && t.priority === "R" &&
-                    (effectivePriority(t) === "A" || effectivePriority(t) === "B")).map(t => {
-                    const ep = effectivePriority(t);
-                    const m = PMETA[ep] || PMETA["?"];
-                    return (
-                      <div key={t.id} style={{ background:m.bg, border:`1px solid ${m.border}`,
-                        borderRadius:6, padding:"10px 14px", marginBottom:8,
-                        display:"flex", alignItems:"center", gap:10 }}>
-                        <div style={{ width:20, height:20, borderRadius:"50%", background:m.accent,
-                          color:"#fff", display:"flex", alignItems:"center", justifyContent:"center",
-                          fontSize:10, fontWeight:"bold", flexShrink:0 }}>{ep}</div>
-                        <div style={{ flex:1 }}>
-                          <div style={{ fontSize:13, color:"#1e1810" }}>{t.cleanText}</div>
-                          <div style={{ fontSize:11, color:"#9a8a78", marginTop:1 }}>↺ {t.recurrence} · due {fmtDate(t.dueDate)}</div>
-                        </div>
+                  {(() => {
+                    const recurringDue = (tasks||[]).filter(t => !t.done && t.priority === "R" &&
+                      (effectivePriority(t) === "A" || effectivePriority(t) === "B"));
+                    if (recurringDue.length === 0) return (
+                      <div style={{ padding:"20px 0", textAlign:"center", color:"#8a7060", fontSize:14, fontStyle:"italic" }}>
+                        No recurring tasks due today or tomorrow.
                       </div>
                     );
-                  })}
+                    return recurringDue.map(t => {
+                      const ep = effectivePriority(t);
+                      const m = PMETA[ep] || PMETA["?"];
+                      return (
+                        <div key={t.id} style={{ background:m.bg, border:`1px solid ${m.border}`,
+                          borderRadius:6, padding:"10px 14px", marginBottom:8,
+                          display:"flex", alignItems:"center", gap:10 }}>
+                          <div style={{ width:20, height:20, borderRadius:"50%", background:m.accent,
+                            color:"#fff", display:"flex", alignItems:"center", justifyContent:"center",
+                            fontSize:10, fontWeight:"bold", flexShrink:0 }}>{ep}</div>
+                          <div style={{ flex:1 }}>
+                            <div style={{ fontSize:13, color:"#1e1810" }}>{t.cleanText}</div>
+                            <div style={{ fontSize:11, color:"#9a8a78", marginTop:1 }}>↺ {t.recurrence} · due {fmtDate(t.dueDate)}</div>
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
                   <div style={{ marginTop:16, display:"flex", justifyContent:"flex-end", gap:8 }}>
                     <SBtn onClick={() => setPlanStep(0)} color="#aaa">← Back</SBtn>
                     <SBtn onClick={advancePlanStep} color="#2a7048">Next →</SBtn>

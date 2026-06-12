@@ -153,7 +153,7 @@ describe("advanceDate", () => {
     expect(advanceDate("2026-01-01", "1w")).toBe("2026-01-08");
   });
   it("advances by months", () => {
-    expect(advanceDate("2026-01-31", "1m")).toBe("2026-03-03"); // Jan 31 + 1m = Feb overflows to Mar 3
+    expect(advanceDate("2026-01-31", "1m")).toBe("2026-03-03"); // Jan 31 + 1m overflows Feb → Mar 3 (JS Date behavior)
   });
   it("advances by years", () => {
     expect(advanceDate("2026-03-01", "1y")).toBe("2027-03-01");
@@ -200,6 +200,8 @@ describe("parseTodoTxt", () => {
     expect(parseTodoTxt("(R) Task rec:weekly", 5).recurrence).toBe("1w");
     expect(parseTodoTxt("(R) Task rec:monthly", 6).recurrence).toBe("1m");
     expect(parseTodoTxt("(R) Task rec:daily", 7).recurrence).toBe("1d");
+    expect(parseTodoTxt("(R) Task rec:yearly", 8).recurrence).toBe("1y");
+    expect(parseTodoTxt("(R) Task rec:weekday", 9).recurrence).toBe("1wd");
   });
 
   it("parses seq tag", () => {
@@ -394,10 +396,11 @@ describe("sortedTxt", () => {
     expect(lines[1]).toMatch(/^x /);
   });
 
-  it("active tasks sort by seq", () => {
+  it("active tasks sort by seq regardless of priority", () => {
+    // Both tasks are priority A — seq is the only differentiator
     const tasks = [
       { ...parseTodoTxt("(A) Second", 1), seq: 2 },
-      { ...parseTodoTxt("(B) First",  2), seq: 1 },
+      { ...parseTodoTxt("(A) First",  2), seq: 1 },
     ];
     const txt = sortedTxt(tasks);
     const lines = txt.trim().split("\n");
@@ -520,6 +523,18 @@ describe("TODAY midnight refresh", () => {
     TODAY = original; // restore
     expect(TODAY).toBe(original);
   });
+
+  it("effectivePriority uses updated TODAY after simulated midnight tick", () => {
+    const original = TODAY;
+    // A task due "tomorrow" relative to original TODAY
+    const nextDay = advanceDate(TODAY, "1d");
+    const task = { priority: "R", dueDate: nextDay };
+    expect(effectivePriority(task)).toBe("B"); // due tomorrow → B
+    // Advance TODAY to nextDay — now the task is due today
+    TODAY = nextDay;
+    expect(effectivePriority(task)).toBe("A"); // due today → A
+    TODAY = original;
+  });
 });
 
 describe("someday task filtering", () => {
@@ -557,5 +572,260 @@ describe("someday task filtering", () => {
   it("excludes done tasks", () => {
     const t = parseTodoTxt("x 2026-03-01 Done task", 7);
     expect(isSomeday(t)).toBe(false);
+  });
+});
+
+// ─── dueSortKey ───────────────────────────────────────────────────────────────
+function dueSortKey(task) {
+  if (!task.dueDate) return 3;
+  if (task.dueDate < TODAY) return 0;
+  if (task.dueDate === TODAY) return 1;
+  return 2;
+}
+
+describe("dueSortKey", () => {
+  it("overdue tasks get key 0 (highest urgency)", () => {
+    expect(dueSortKey({ dueDate: "2020-01-01" })).toBe(0);
+  });
+
+  it("tasks due today get key 1", () => {
+    expect(dueSortKey({ dueDate: TODAY })).toBe(1);
+  });
+
+  it("future tasks get key 2", () => {
+    const future = advanceDate(TODAY, "5d");
+    expect(dueSortKey({ dueDate: future })).toBe(2);
+  });
+
+  it("tasks with no due date get key 3 (lowest urgency)", () => {
+    expect(dueSortKey({ dueDate: null })).toBe(3);
+  });
+
+  it("sorts overdue before today before future before no-date", () => {
+    const tasks = [
+      { dueDate: null },
+      { dueDate: advanceDate(TODAY, "3d") },
+      { dueDate: TODAY },
+      { dueDate: "2020-06-01" },
+    ];
+    const sorted = [...tasks].sort((a, b) => dueSortKey(a) - dueSortKey(b));
+    expect(sorted[0].dueDate).toBe("2020-06-01");
+    expect(sorted[1].dueDate).toBe(TODAY);
+    expect(sorted[2].dueDate).toBe(advanceDate(TODAY, "3d"));
+    expect(sorted[3].dueDate).toBeNull();
+  });
+});
+
+// ─── fmtDate ─────────────────────────────────────────────────────────────────
+function fmtDate(iso) {
+  if (!iso) return "";
+  const [, m, d] = iso.split("-");
+  return `${parseInt(m)}/${parseInt(d)}`;
+}
+
+describe("fmtDate", () => {
+  it("formats a mid-year date without leading zeros", () => {
+    expect(fmtDate("2026-06-05")).toBe("6/5");
+  });
+
+  it("formats a date with double-digit month and day", () => {
+    expect(fmtDate("2026-11-20")).toBe("11/20");
+  });
+
+  it("formats January 1st correctly", () => {
+    expect(fmtDate("2026-01-01")).toBe("1/1");
+  });
+
+  it("returns empty string for null", () => {
+    expect(fmtDate(null)).toBe("");
+  });
+
+  it("returns empty string for undefined", () => {
+    expect(fmtDate(undefined)).toBe("");
+  });
+});
+
+// ─── upcomingTasks sort ───────────────────────────────────────────────────────
+function sortUpcoming(tasks) {
+  return [...tasks].sort((a, b) => {
+    if (a.thresholdDate !== b.thresholdDate) return a.thresholdDate.localeCompare(b.thresholdDate);
+    if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+    if (a.dueDate) return -1;
+    if (b.dueDate) return 1;
+    return 0;
+  });
+}
+
+describe("upcomingTasks sort", () => {
+  const t1 = parseTodoTxt(`(B) Later threshold t:2026-09-01 due:2026-09-10`, 1);
+  const t2 = parseTodoTxt(`(A) Earlier threshold t:2026-08-01 due:2026-08-10`, 2);
+  const t3 = parseTodoTxt(`(B) Same threshold earlier due t:2026-08-01 due:2026-08-05`, 3);
+  const t4 = parseTodoTxt(`(C) Same threshold no due date t:2026-08-01`, 4);
+
+  it("sorts by threshold date ascending", () => {
+    const sorted = sortUpcoming([t1, t2]);
+    expect(sorted[0].cleanText).toBe("Earlier threshold");
+    expect(sorted[1].cleanText).toBe("Later threshold");
+  });
+
+  it("within same threshold, sorts by due date ascending", () => {
+    const sorted = sortUpcoming([t2, t3]);
+    expect(sorted[0].cleanText).toBe("Same threshold earlier due");
+    expect(sorted[1].cleanText).toBe("Earlier threshold");
+  });
+
+  it("within same threshold, task with due date sorts before task without", () => {
+    const sorted = sortUpcoming([t4, t3]);
+    expect(sorted[0].cleanText).toBe("Same threshold earlier due");
+    expect(sorted[1].cleanText).toBe("Same threshold no due date");
+  });
+});
+
+// ─── matchesSearch ────────────────────────────────────────────────────────────
+function matchesSearch(task, query) {
+  const q = query ? query.toLowerCase() : "";
+  if (!q) return true;
+  if (task.cleanText.toLowerCase().includes(q)) return true;
+  if (task.projects.some(p => p.toLowerCase().includes(q))) return true;
+  if (task.contexts.some(c => c.toLowerCase().includes(q))) return true;
+  if (task.dueDate && task.dueDate.includes(q)) return true;
+  return false;
+}
+
+describe("matchesSearch", () => {
+  const task = parseTodoTxt("(A) Call dentist +Health @phone due:2026-06-15", 1);
+
+  it("returns true for empty query", () => {
+    expect(matchesSearch(task, "")).toBe(true);
+    expect(matchesSearch(task, null)).toBe(true);
+  });
+
+  it("matches on cleanText (case-insensitive)", () => {
+    expect(matchesSearch(task, "dentist")).toBe(true);
+    expect(matchesSearch(task, "DENTIST")).toBe(true);
+    expect(matchesSearch(task, "call")).toBe(true);
+  });
+
+  it("matches on project tag", () => {
+    expect(matchesSearch(task, "health")).toBe(true);
+    expect(matchesSearch(task, "Health")).toBe(true);
+  });
+
+  it("matches on context tag", () => {
+    expect(matchesSearch(task, "phone")).toBe(true);
+  });
+
+  it("matches on due date string", () => {
+    expect(matchesSearch(task, "2026-06-15")).toBe(true);
+    expect(matchesSearch(task, "06-15")).toBe(true);
+  });
+
+  it("returns false for non-matching query", () => {
+    expect(matchesSearch(task, "groceries")).toBe(false);
+    expect(matchesSearch(task, "work")).toBe(false);
+  });
+});
+
+// ─── isVisibleToday ───────────────────────────────────────────────────────────
+// Mirrors isVisibleToday from App.jsx, parameterized for testability
+function isVisibleToday(task, { showDone = false, filterCtx = null, filterProj = null, query = "" } = {}) {
+  const q = query.toLowerCase();
+  function matchesSearchLocal(t) {
+    if (!q) return true;
+    if (t.cleanText.toLowerCase().includes(q)) return true;
+    if (t.projects.some(p => p.toLowerCase().includes(q))) return true;
+    if (t.contexts.some(c => c.toLowerCase().includes(q))) return true;
+    if (t.dueDate && t.dueDate.includes(q)) return true;
+    return false;
+  }
+  if (task.done && !showDone) return false;
+  if (filterCtx  && !task.contexts.includes(filterCtx))  return false;
+  if (filterProj && !task.projects.includes(filterProj)) return false;
+  if (!matchesSearchLocal(task)) return false;
+  if (task.thresholdDate && task.thresholdDate > TODAY)  return false;
+  if (task.priority === "R" && !task.done) {
+    const ep = effectivePriority(task);
+    return ep === "A" || ep === "B";
+  }
+  return true;
+}
+
+describe("isVisibleToday", () => {
+  it("shows a normal active task", () => {
+    const t = parseTodoTxt("(A) Do something", 1);
+    expect(isVisibleToday(t)).toBe(true);
+  });
+
+  it("hides done tasks when showDone is false (default)", () => {
+    const t = parseTodoTxt("x 2026-01-01 Done task", 1);
+    expect(isVisibleToday(t, { showDone: false })).toBe(false);
+  });
+
+  it("shows done tasks when showDone is true", () => {
+    const t = parseTodoTxt("x 2026-01-01 Done task", 1);
+    expect(isVisibleToday(t, { showDone: true })).toBe(true);
+  });
+
+  it("hides tasks with a future threshold date", () => {
+    const future = advanceDate(TODAY, "5d");
+    const t = parseTodoTxt(`(B) Future task t:${future}`, 1);
+    expect(isVisibleToday(t)).toBe(false);
+  });
+
+  it("shows tasks whose threshold date is today", () => {
+    const t = parseTodoTxt(`(B) Ready now t:${TODAY}`, 1);
+    expect(isVisibleToday(t)).toBe(true);
+  });
+
+  it("filters by context — shows task with matching context", () => {
+    const t = parseTodoTxt("(A) Call someone @phone", 1);
+    expect(isVisibleToday(t, { filterCtx: "phone" })).toBe(true);
+  });
+
+  it("filters by context — hides task without matching context", () => {
+    const t = parseTodoTxt("(A) Do computer work @computer", 1);
+    expect(isVisibleToday(t, { filterCtx: "phone" })).toBe(false);
+  });
+
+  it("filters by project — shows task with matching project", () => {
+    const t = parseTodoTxt("(A) Work thing +Work", 1);
+    expect(isVisibleToday(t, { filterProj: "Work" })).toBe(true);
+  });
+
+  it("filters by project — hides task without matching project", () => {
+    const t = parseTodoTxt("(A) Home thing +Home", 1);
+    expect(isVisibleToday(t, { filterProj: "Work" })).toBe(false);
+  });
+
+  it("hides task that doesn't match search query", () => {
+    const t = parseTodoTxt("(A) Call dentist @phone", 1);
+    expect(isVisibleToday(t, { query: "groceries" })).toBe(false);
+  });
+
+  it("shows task that matches search query", () => {
+    const t = parseTodoTxt("(A) Call dentist @phone", 1);
+    expect(isVisibleToday(t, { query: "dentist" })).toBe(true);
+  });
+
+  it("R task due today is visible (effectivePriority → A)", () => {
+    const t = parseTodoTxt(`(R) Daily standup due:${TODAY} rec:1d`, 1);
+    expect(isVisibleToday(t)).toBe(true);
+  });
+
+  it("R task due tomorrow is visible (effectivePriority → B)", () => {
+    const tomorrow = advanceDate(TODAY, "1d");
+    const t = parseTodoTxt(`(R) Weekly review due:${tomorrow} rec:1w`, 1);
+    expect(isVisibleToday(t)).toBe(true);
+  });
+
+  it("R task due in 2+ days is hidden (effectivePriority → null)", () => {
+    const future = advanceDate(TODAY, "3d");
+    const t = parseTodoTxt(`(R) Future recurring due:${future} rec:1w`, 1);
+    expect(isVisibleToday(t)).toBe(false);
+  });
+
+  it("R task with no due date is hidden (effectivePriority → R, not A or B)", () => {
+    const t = parseTodoTxt("(R) Undated recurring rec:1w", 1);
+    expect(isVisibleToday(t)).toBe(false);
   });
 });
