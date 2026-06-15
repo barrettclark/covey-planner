@@ -5,7 +5,7 @@ import {
 } from "./todotxt.js";
 import {
   loadTokens, saveTokens, getAccessToken, exchangeCode,
-  dbxDownload, dbxUpload, dbxGetCursor, dbxLongpoll,
+  dbxDownload, dbxUpload, dbxGetCursor, dbxLongpoll, DropboxConflictError,
 } from "./dropbox.js";
 
 // Module-level TODAY — refreshed at midnight and on tab visibility change.
@@ -95,9 +95,20 @@ export function useTaskManager() {
       return setTimeout(() => { refresh(); scheduleMidnight(); }, msUntilMidnight + 100);
     }
     const t = scheduleMidnight();
-    document.addEventListener("visibilitychange", refresh);
-    return () => { clearTimeout(t); document.removeEventListener("visibilitychange", refresh); };
-  }, []);
+    // Re-fetch from Dropbox on visibilitychange AND window focus so that changes
+    // made on other devices (SwiftDo, Obsidian, etc.) are picked up promptly.
+    function handleVisible() {
+      refresh();
+      if (dbxConnected && !isEditingRef.current) loadFromDropbox();
+    }
+    document.addEventListener("visibilitychange", handleVisible);
+    window.addEventListener("focus", handleVisible);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("visibilitychange", handleVisible);
+      window.removeEventListener("focus", handleVisible);
+    };
+  }, [dbxConnected]);
 
   // ── Poll pause: suspend longpoll while editing ───────────────────────────────
   const isEditing = editingId !== null || addingFor !== null;
@@ -142,7 +153,8 @@ export function useTaskManager() {
     try {
       const token = await getAccessToken();
       if (!token) { setDbxConnected(false); setDbxStatus(null); return; }
-      const text = await dbxDownload(token);
+      const { text, rev } = await dbxDownload(token);
+      if (rev) currentRev.current = rev;
       const parsed = text.split("\n").filter(l => l.trim()).map((raw, i) => parseTodoTxt(raw, i + 1));
       setTasks(parsed);
       nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
@@ -158,19 +170,56 @@ export function useTaskManager() {
     if (!token) return;
     setDbxStatus("saving");
     try {
-      await dbxUpload(token, sortedTxt(taskList));
+      const content = sortedTxt(taskList);
+      const { rev: newRev } = await dbxUpload(token, content, currentRev.current);
+      if (newRev) currentRev.current = newRev;
       lastSavedAt.current = Date.now();
       try {
         const freshToken = await getAccessToken();
         if (freshToken) pollCursor.current = await dbxGetCursor(freshToken);
       } catch {}
       setDbxStatus("saved");
-    } catch(e) { setDbxStatus("error"); console.error("Dropbox save error:", e); }
+    } catch(e) {
+      if (e instanceof DropboxConflictError) {
+        // Another client wrote since our last rev — re-download, merge, retry.
+        try {
+          const freshToken = await getAccessToken();
+          if (!freshToken) { setDbxStatus("error"); return; }
+          const { text: remoteText, rev: remoteRev } = await dbxDownload(freshToken);
+          const remoteLines = new Set(remoteText.split("\n").filter(l => l.trim()));
+          const localLines  = sortedTxt(taskList).split("\n").filter(l => l.trim());
+          // Three-way merge:
+          // - Keep everything the remote has (another client added those)
+          // - Keep local lines not in remote (we added those)
+          // - Deduplicate
+          const merged = [...new Set([...remoteLines, ...localLines])].join("\n") + "\n";
+          if (remoteRev) currentRev.current = remoteRev;
+          const { rev: afterMergeRev } = await dbxUpload(freshToken, merged, currentRev.current);
+          if (afterMergeRev) currentRev.current = afterMergeRev;
+          // Re-parse merged content into local state so UI reflects merged result
+          const parsed = merged.split("\n").filter(l => l.trim()).map((raw, i) => parseTodoTxt(raw, i + 1));
+          setTasks(parsed);
+          nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
+          lastSavedAt.current = Date.now();
+          setDbxStatus("saved");
+          flash("✓ Merged with remote changes");
+        } catch(mergeErr) {
+          setDbxStatus("error");
+          console.error("Dropbox merge error:", mergeErr);
+        }
+      } else {
+        setDbxStatus("error");
+        console.error("Dropbox save error:", e);
+      }
+    }
   }, []);
 
   const saveTimer   = useRef(null);
   const lastSavedAt = useRef(0);
   const pollCursor  = useRef(null);
+  // Track the Dropbox file revision so uploads can use mode:'update' instead
+  // of mode:'overwrite'.  null means "unknown — use overwrite on first write".
+  const currentRev  = useRef(null);
 
   useEffect(() => {
     if (!dbxConnected || tasks === null) return;

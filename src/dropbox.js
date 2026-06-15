@@ -103,17 +103,47 @@ export async function dbxDownload(accessToken) {
       "Dropbox-API-Arg": JSON.stringify({ path: DBX_FILE_PATH }) },
   });
   if (!res.ok) throw new Error(`Dropbox download failed: ${res.status}`);
-  return res.text();
+  // The file revision is returned in the Dropbox-API-Result response header.
+  let rev = null;
+  try {
+    const meta = JSON.parse(res.headers.get("Dropbox-API-Result") || "{}");
+    rev = meta.rev || null;
+  } catch {}
+  const text = await res.text();
+  return { text, rev };
 }
 
-export async function dbxUpload(accessToken, content) {
+// Upload a file to Dropbox.
+//
+// If `rev` is provided the upload uses mode:'update' — Dropbox will return
+// HTTP 409 if the file was modified since that rev was fetched.  Pass null to
+// fall back to the old mode:'overwrite' behaviour (first upload after connect).
+//
+// Returns { result: <Dropbox metadata>, rev: <new rev string> }.
+// Throws a `DropboxConflictError` on HTTP 409 so callers can merge and retry.
+
+export class DropboxConflictError extends Error {
+  constructor() { super("Dropbox conflict: file was modified by another client"); this.name = "DropboxConflictError"; }
+}
+
+export async function dbxUpload(accessToken, content, rev = null) {
+  const mode = rev
+    ? { ".tag": "update", update: rev }
+    : { ".tag": "overwrite" };
+
   const res = await fetch(DBX_UPLOAD_URL, {
     method: "POST",
-    headers: { "Authorization": `Bearer ${accessToken}`,
-      "Dropbox-API-Arg": JSON.stringify({ path: DBX_FILE_PATH, mode: "overwrite", autorename: false, mute: true }),
-      "Content-Type": "application/octet-stream" },
+    headers: {
+      "Authorization": `Bearer ${accessToken}`,
+      "Dropbox-API-Arg": JSON.stringify({ path: DBX_FILE_PATH, mode, autorename: false, mute: true }),
+      "Content-Type": "application/octet-stream",
+    },
     body: content,
   });
+
+  if (res.status === 409) throw new DropboxConflictError();
   if (!res.ok) throw new Error(`Dropbox upload failed: ${res.status}`);
-  return res.json();
+
+  const result = await res.json();
+  return { result, rev: result.rev || null };
 }
