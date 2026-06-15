@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "covey_planner",
+  "project_id": "b7b6956e-ea48-42aa-be17-319cda0cda08"
+}
