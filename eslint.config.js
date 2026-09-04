@@ -32,6 +32,9 @@ export default defineConfig([
       // React Compiler rule; the compiler isn't enabled here and it false-positives
       // on hoisted function references inside effects.
       "react-hooks/immutability": "warn",
+      // New in react-hooks 7.1; one pre-existing hit (APOD cache read in App.jsx).
+      // Tracked for a real fix in #6.
+      "react-hooks/set-state-in-effect": "warn",
     },
   },
 ]);
