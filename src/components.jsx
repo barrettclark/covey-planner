@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { fmtDate, fmtWeekday, fmtDayNum, effectivePriority } from "./todotxt.js";
-import { C, FONT_SERIF, RADIUS } from "./theme.js";
+import { C, RADIUS } from "./theme.js";
 
 // ─── Shared style constants ───────────────────────────────────────────────────
 
