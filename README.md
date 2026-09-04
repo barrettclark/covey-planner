@@ -36,13 +36,13 @@ A new deploy must be triggered after setting the variable for it to take effect.
 
 This app uses the standard todo.txt format with the following custom tags:
 
-| Tag | Example | Description |
-|-----|---------|-------------|
-| `rec:` | `rec:1w` | Recurrence interval (`1d`, `1w`, `1m`, `1y`, `1wd`) |
-| `t:` | `t:2026-06-15` | Threshold date — task hidden until this date (Simpletask-compatible) |
-| `seq:` | `seq:3` | Display order within a priority group (drag-and-drop position) |
-| `status:` | `status:inprogress` | In-progress indicator (stripped from display) |
-| `pri:` | `pri:A` | Preserved priority on completed tasks for forensics (SwiftDo-compatible) |
+| Tag       | Example             | Description                                                              |
+| --------- | ------------------- | ------------------------------------------------------------------------ |
+| `rec:`    | `rec:1w`            | Recurrence interval (`1d`, `1w`, `1m`, `1y`, `1wd`)                      |
+| `t:`      | `t:2026-06-15`      | Threshold date — task hidden until this date (Simpletask-compatible)     |
+| `seq:`    | `seq:3`             | Display order within a priority group (drag-and-drop position)           |
+| `status:` | `status:inprogress` | In-progress indicator (stripped from display)                            |
+| `pri:`    | `pri:A`             | Preserved priority on completed tasks for forensics (SwiftDo-compatible) |
 
 Completed tasks serialize as `x DATE text pri:X` (not the canonical `x DATE (X) text` form) for SwiftDo round-trip compatibility.
 
