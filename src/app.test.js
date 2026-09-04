@@ -9,18 +9,29 @@
  *         filtering, assignSeq, somedayTask filtering.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
-  parseTodoTxt, taskToTxt, sortedTxt, assignSeq,
-  advanceDate, getToday, effectivePriority, dueSortKey, fmtDate,
+  parseTodoTxt,
+  taskToTxt,
+  sortedTxt,
+  assignSeq,
+  advanceDate,
+  getToday,
+  effectivePriority,
+  dueSortKey,
+  fmtDate,
 } from "./todotxt.js";
 
 let TODAY = new Date().toISOString().split("T")[0];
 
 // Simulates the addTask() priority logic from App.jsx
 function simulateAddTask({ formPriority, groupPriority, hasRec }) {
-  const basePriority = formPriority && formPriority !== "?" ? formPriority
-    : (groupPriority === "?" ? "C" : groupPriority);
+  const basePriority =
+    formPriority && formPriority !== "?"
+      ? formPriority
+      : groupPriority === "?"
+        ? "C"
+        : groupPriority;
   return hasRec ? "R" : basePriority;
 }
 
@@ -101,7 +112,10 @@ describe("parseTodoTxt", () => {
   });
 
   it("cleanText strips all tags", () => {
-    const t = parseTodoTxt("(A) Do thing +Proj @ctx due:2026-03-10 t:2026-03-01 rec:1w seq:3 status:inprogress", 10);
+    const t = parseTodoTxt(
+      "(A) Do thing +Proj @ctx due:2026-03-10 t:2026-03-01 rec:1w seq:3 status:inprogress",
+      10,
+    );
     expect(t.cleanText).toBe("Do thing");
   });
 
@@ -254,23 +268,30 @@ describe("addTask priority selection (REGRESSION: group priority must be respect
 describe("assignSeq", () => {
   it("assigns sequential seq to tasks that lack one", () => {
     const tasks = [
-      { id:1, seq:null },
-      { id:2, seq:null },
-      { id:3, seq:null },
+      { id: 1, seq: null },
+      { id: 2, seq: null },
+      { id: 3, seq: null },
     ];
     const result = assignSeq(tasks);
     expect(result.map(t => t.seq)).toEqual([1, 2, 3]);
   });
 
   it("preserves existing seq values", () => {
-    const tasks = [{ id:1, seq:5 }, { id:2, seq:null }];
+    const tasks = [
+      { id: 1, seq: 5 },
+      { id: 2, seq: null },
+    ];
     const result = assignSeq(tasks);
     expect(result[0].seq).toBe(5);
     expect(result[1].seq).toBe(6);
   });
 
   it("gaps don't cause collisions", () => {
-    const tasks = [{ id:1, seq:10 }, { id:2, seq:null }, { id:3, seq:null }];
+    const tasks = [
+      { id: 1, seq: 10 },
+      { id: 2, seq: null },
+      { id: 3, seq: null },
+    ];
     const result = assignSeq(tasks);
     const seqs = result.map(t => t.seq);
     expect(new Set(seqs).size).toBe(3); // all unique
@@ -280,10 +301,7 @@ describe("assignSeq", () => {
 
 describe("sortedTxt", () => {
   it("puts done tasks after active tasks", () => {
-    const tasks = [
-      parseTodoTxt("x 2026-03-01 Done task", 1),
-      parseTodoTxt("(A) Active task", 2),
-    ];
+    const tasks = [parseTodoTxt("x 2026-03-01 Done task", 1), parseTodoTxt("(A) Active task", 2)];
     const txt = sortedTxt(tasks);
     const lines = txt.trim().split("\n");
     expect(lines[0]).toContain("(A)");
@@ -294,7 +312,7 @@ describe("sortedTxt", () => {
     // Both tasks are priority A — seq is the only differentiator
     const tasks = [
       { ...parseTodoTxt("(A) Second", 1), seq: 2 },
-      { ...parseTodoTxt("(A) First",  2), seq: 1 },
+      { ...parseTodoTxt("(A) First", 2), seq: 1 },
     ];
     const txt = sortedTxt(tasks);
     const lines = txt.trim().split("\n");
@@ -310,7 +328,10 @@ describe("sortedTxt", () => {
     ];
     const tasks = raws.map((r, i) => parseTodoTxt(r, i + 1));
     const txt = sortedTxt(tasks);
-    const reparsed = txt.trim().split("\n").map((l, i) => parseTodoTxt(l, i + 1));
+    const reparsed = txt
+      .trim()
+      .split("\n")
+      .map((l, i) => parseTodoTxt(l, i + 1));
     expect(reparsed.find(t => t.cleanText === "Call dentist")?.priority).toBe("A");
     expect(reparsed.find(t => t.cleanText === "Weekly standup")?.recurrence).toBe("1w");
     expect(reparsed.find(t => t.cleanText === "Prepare review")?.thresholdDate).toBe("2026-04-01");
@@ -320,10 +341,10 @@ describe("sortedTxt", () => {
 // ── BUG-FIX: keyboard shortcut 'n' must initialise form.priority to "A" ─────
 describe("keyboard shortcut n — priority initialisation (REGRESSION)", () => {
   // Simulates what the keydown handler does after the fix
-  function simulateNKey(currentFormPriority) {
+  function simulateNKey(_prevFormPriority) {
     // Before fix: only setAddingFor("A") was called — form.priority unchanged
     // After fix:  setForm(f => ({ ...f, priority: "A" })) is also called
-    const updatedPriority = "A"; // the fix always sets priority: "A"
+    const updatedPriority = "A"; // the fix always sets priority: "A", ignoring prior state
     return simulateAddTask({ formPriority: updatedPriority, groupPriority: "A", hasRec: false });
   }
 
@@ -420,8 +441,12 @@ describe("TODAY midnight refresh", () => {
 describe("someday task filtering", () => {
   // Mirrors the somedayTasks filter in App.jsx
   function isSomeday(task) {
-    return !task.done && !task.dueDate && !task.recurrence &&
-      (task.priority === "C" || task.priority === null);
+    return (
+      !task.done &&
+      !task.dueDate &&
+      !task.recurrence &&
+      (task.priority === "C" || task.priority === null)
+    );
   }
 
   it("includes C tasks with no due date and no recurrence", () => {
@@ -604,7 +629,10 @@ describe("matchesSearch", () => {
 
 // ─── isVisibleToday ───────────────────────────────────────────────────────────
 // Mirrors isVisibleToday from App.jsx, parameterized for testability
-function isVisibleToday(task, { showDone = false, filterCtx = null, filterProj = null, query = "" } = {}) {
+function isVisibleToday(
+  task,
+  { showDone = false, filterCtx = null, filterProj = null, query = "" } = {},
+) {
   const q = query.toLowerCase();
   function matchesSearchLocal(t) {
     if (!q) return true;
@@ -615,10 +643,10 @@ function isVisibleToday(task, { showDone = false, filterCtx = null, filterProj =
     return false;
   }
   if (task.done && !showDone) return false;
-  if (filterCtx  && !task.contexts.includes(filterCtx))  return false;
+  if (filterCtx && !task.contexts.includes(filterCtx)) return false;
   if (filterProj && !task.projects.includes(filterProj)) return false;
   if (!matchesSearchLocal(task)) return false;
-  if (task.thresholdDate && task.thresholdDate > TODAY)  return false;
+  if (task.thresholdDate && task.thresholdDate > TODAY) return false;
   if (task.priority === "R" && !task.done) {
     const ep = effectivePriority(task, TODAY);
     return ep === "A" || ep === "B";

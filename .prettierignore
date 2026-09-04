@@ -1,0 +1,10 @@
+dist
+coverage
+node_modules
+package-lock.json
+public
+.beads
+
+# Contain beads-managed blocks that bd regenerates — leave formatting to bd
+AGENTS.md
+CLAUDE.md
