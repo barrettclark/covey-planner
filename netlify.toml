@@ -4,3 +4,7 @@
 
 [build.environment]
   NODE_VERSION = "24"
+  # VITE_DROPBOX_APP_KEY is a Dropbox PKCE app key — a public client identifier
+  # that ships in the browser bundle by design (PKCE has no client secret).
+  # Exclude it from Netlify's secret scanner so the deploy doesn't fail.
+  SECRETS_SCAN_OMIT_KEYS = "VITE_DROPBOX_APP_KEY"
