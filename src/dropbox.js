@@ -65,7 +65,13 @@ async function refreshToken(refresh_token) {
       client_id: DBX_APP_KEY,
     }),
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const body = await res.text();
+    const err = new Error(body);
+    // Only a revoked grant means the user must reconnect; other failures are transient.
+    err.invalidGrant = res.status === 400 && body.includes("invalid_grant");
+    throw err;
+  }
   return res.json();
 }
 
@@ -93,8 +99,9 @@ export async function getAccessToken() {
         expires_at: Date.now() + (fresh.expires_in || 14400) * 1000,
       };
       saveTokens(tokens);
-    } catch {
-      return null;
+    } catch (e) {
+      if (e.invalidGrant) return null;
+      throw e;
     }
   }
   return tokens.access_token;
@@ -157,7 +164,7 @@ export class DropboxConflictError extends Error {
   }
 }
 
-export async function dbxUpload(accessToken, content, rev = null) {
+export async function dbxUpload(accessToken, content, rev = null, { keepalive = false } = {}) {
   const mode = rev ? { ".tag": "update", update: rev } : { ".tag": "overwrite" };
 
   const res = await fetch(DBX_UPLOAD_URL, {
@@ -173,6 +180,7 @@ export async function dbxUpload(accessToken, content, rev = null) {
       "Content-Type": "application/octet-stream",
     },
     body: content,
+    keepalive,
   });
 
   if (res.status === 409) throw new DropboxConflictError();
