@@ -215,7 +215,7 @@ export function useTaskManager() {
         return;
       }
       const { text, rev } = await dbxDownload(token);
-      if (pendingSaveRef.current) {
+      if (pendingSaveRef.current || isEditingRef.current) {
         remoteChangedRef.current = true;
         return;
       }
@@ -301,7 +301,8 @@ export function useTaskManager() {
       setDbxStatus("error");
       console.error("Dropbox save error:", e);
       // Keep the unsaved-work guard up and try again rather than let a reload overwrite the edit.
-      saveTimer.current = setTimeout(() => saveToDropbox(tasksRef.current, { keepalive }), 10000);
+      // Never keepalive here: this timer only runs while the page is alive.
+      saveTimer.current = setTimeout(() => saveToDropbox(tasksRef.current), 10000);
     } finally {
       if (settled && tasksRef.current === taskList) pendingSaveRef.current = false;
     }

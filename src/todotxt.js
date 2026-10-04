@@ -137,35 +137,50 @@ export function localDateISO(d = new Date()) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-// Three-way merge at line granularity. `base` is the last text both sides agreed on.
-// Lines we removed or changed are dropped from remote; lines we added are appended.
+// Three-way merge keyed by task identity: the seq: tag when present, otherwise the
+// line text plus its occurrence index. Delete-vs-edit keeps the edit; edit-vs-edit keeps local.
 export function mergeTodoText(base, local, remote) {
   // Re-serialize each line so formatting differences between clients don't count as edits.
-  const norm = l => sortedTxt([parseTodoTxt(l, 0)]).trim();
+  const norm = l => taskToTxt(parseTodoTxt(l, 0)).trim();
   const lines = t =>
     t
       .split("\n")
       .filter(l => l.trim())
       .map(norm);
-  // Multiset diff: identical lines are distinct tasks, so count occurrences rather than dedupe.
-  const count = arr => arr.reduce((m, l) => m.set(l, (m.get(l) || 0) + 1), new Map());
-  const baseC = count(lines(base));
-  const localC = count(lines(local));
-  const toRemove = new Map();
-  for (const [l, b] of baseC) {
-    const drop = b - (localC.get(l) || 0);
-    if (drop > 0) toRemove.set(l, drop);
+  const keyed = arr => {
+    const seen = new Map();
+    return new Map(
+      arr.map(l => {
+        const seq = (l.match(/\bseq:(\d+)\b/) || [])[1];
+        if (seq) return [`s:${seq}`, l];
+        const n = seen.get(l) || 0;
+        seen.set(l, n + 1);
+        return [`t:${l}#${n}`, l];
+      }),
+    );
+  };
+  const B = keyed(lines(base));
+  const L = keyed(lines(local));
+  const R = keyed(lines(remote));
+  const out = [];
+  for (const [k, baseLine] of B) {
+    const l = L.get(k);
+    const r = R.get(k);
+    const localEdited = l !== undefined && l !== baseLine;
+    const remoteEdited = r !== undefined && r !== baseLine;
+    if (l === undefined && r === undefined) continue;
+    if (l === undefined) {
+      // Deleted locally: keep the remote version only if it was edited.
+      if (remoteEdited) out.push(r);
+    } else if (r === undefined) {
+      if (localEdited) out.push(l);
+    } else {
+      out.push(localEdited ? l : r);
+    }
   }
-  const merged = [];
-  for (const l of lines(remote)) {
-    if (toRemove.get(l) > 0) toRemove.set(l, toRemove.get(l) - 1);
-    else merged.push(l);
-  }
-  for (const [l, c] of localC) {
-    const add = c - (baseC.get(l) || 0);
-    for (let i = 0; i < add; i++) merged.push(l);
-  }
-  return sortedTxt(merged.map((raw, i) => parseTodoTxt(raw, i + 1)));
+  for (const [k, l] of L) if (!B.has(k)) out.push(l);
+  for (const [k, r] of R) if (!B.has(k)) out.push(r);
+  return sortedTxt(out.map((raw, i) => parseTodoTxt(raw, i + 1)));
 }
 
 export function getToday() {

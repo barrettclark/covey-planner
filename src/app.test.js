@@ -825,3 +825,32 @@ describe("mergeTodoText duplicates", () => {
     expect(out.split("\n").filter(l => l.includes("Buy milk"))).toHaveLength(1);
   });
 });
+
+describe("mergeTodoText identity and conflicts", () => {
+  const base = "Buy milk seq:1\nCall dentist seq:2\n";
+
+  it("treats a remote rename as an edit of the same task, not a new one", () => {
+    const remote = "Buy oat milk seq:1\nCall dentist seq:2\n";
+    const out = mergeTodoText(base, base, remote);
+    expect(out.split("\n").filter(l => l.includes("seq:1"))).toEqual(["Buy oat milk seq:1"]);
+  });
+
+  it("delete-vs-edit keeps the edit", () => {
+    const local = "Call dentist seq:2\n";
+    const remote = "Buy oat milk seq:1\nCall dentist seq:2\n";
+    expect(mergeTodoText(base, local, remote)).toContain("Buy oat milk seq:1");
+  });
+
+  it("delete-vs-untouched honors the delete", () => {
+    const local = "Call dentist seq:2\n";
+    expect(mergeTodoText(base, local, base)).not.toContain("Buy milk");
+  });
+
+  it("edit-vs-edit keeps the local version", () => {
+    const local = "Buy almond milk seq:1\nCall dentist seq:2\n";
+    const remote = "Buy oat milk seq:1\nCall dentist seq:2\n";
+    const out = mergeTodoText(base, local, remote);
+    expect(out).toContain("Buy almond milk seq:1");
+    expect(out).not.toContain("Buy oat milk");
+  });
+});
