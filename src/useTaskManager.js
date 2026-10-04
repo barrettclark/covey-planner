@@ -239,16 +239,26 @@ export function useTaskManager() {
 
   const saveToDropbox = useCallback(async (taskList, { keepalive = false } = {}) => {
     const content = sortedTxt(taskList);
+    let settled = false;
     try {
-      if (content === lastSyncedText.current) return;
+      if (content === lastSyncedText.current) {
+        settled = true;
+        return;
+      }
       const token = await getAccessToken();
-      if (!token) return;
+      if (!token) {
+        settled = true;
+        setDbxConnected(false);
+        setDbxStatus(null);
+        return;
+      }
       setDbxStatus("saving");
       try {
         const { rev: newRev } = await dbxUpload(token, content, currentRev.current, { keepalive });
         if (newRev) currentRev.current = newRev;
         lastSyncedText.current = content;
         lastSavedAt.current = Date.now();
+        settled = true;
         try {
           const freshToken = await getAccessToken();
           if (freshToken) pollCursor.current = await dbxGetCursor(freshToken);
@@ -259,7 +269,9 @@ export function useTaskManager() {
         // Another client wrote since our last rev: merge against the last synced base and retry.
         const freshToken = await getAccessToken();
         if (!freshToken) {
-          setDbxStatus("error");
+          settled = true;
+          setDbxConnected(false);
+          setDbxStatus(null);
           return;
         }
         const { text: remoteText, rev: remoteRev } = await dbxDownload(freshToken);
@@ -272,6 +284,7 @@ export function useTaskManager() {
         if (afterMergeRev) currentRev.current = afterMergeRev;
         lastSyncedText.current = merged;
         lastSavedAt.current = Date.now();
+        settled = true;
         // Fold in edits made while the merge was in flight; the next save uploads them.
         const latest = sortedTxt(tasksRef.current);
         const next = mergeTodoText(content, latest, merged);
@@ -287,13 +300,22 @@ export function useTaskManager() {
     } catch (e) {
       setDbxStatus("error");
       console.error("Dropbox save error:", e);
+      // Keep the unsaved-work guard up and try again rather than let a reload overwrite the edit.
+      saveTimer.current = setTimeout(() => saveToDropbox(tasksRef.current, { keepalive }), 10000);
     } finally {
-      if (tasksRef.current === taskList) pendingSaveRef.current = false;
+      if (settled && tasksRef.current === taskList) pendingSaveRef.current = false;
     }
   }, []);
 
+  // Forget the last-synced base on disconnect so a reconnect can't autosave stale state first.
   useEffect(() => {
-    if (!dbxConnected || tasks === null) return;
+    if (!dbxConnected) lastSyncedText.current = null;
+  }, [dbxConnected]);
+
+  useEffect(() => {
+    // Autosave only once a remote load has established the base; otherwise sample data
+    // could overwrite the user's file on first connect.
+    if (!dbxConnected || tasks === null || lastSyncedText.current === null) return;
     pendingSaveRef.current = true;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => saveToDropbox(tasks), 1500);

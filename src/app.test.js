@@ -800,3 +800,28 @@ describe("advanceDate", () => {
     expect(advanceDate("2026-03-15", "1m")).toBe("2026-04-15");
   });
 });
+
+describe("recurrence through parseTodoTxt", () => {
+  it("parses rec:Nwd as weekdays, not weeks", () => {
+    expect(parseTodoTxt("Stand up rec:1wd", 1).recurrence).toBe("1wd");
+  });
+
+  it("parses rec:Nw as weeks", () => {
+    expect(parseTodoTxt("Review rec:2w", 1).recurrence).toBe("2w");
+  });
+});
+
+describe("mergeTodoText duplicates", () => {
+  it("keeps two identical tasks when neither side changed", () => {
+    const base = "Buy milk\nBuy milk\n";
+    const out = mergeTodoText(base, base, base);
+    expect(out.split("\n").filter(l => l.includes("Buy milk"))).toHaveLength(2);
+  });
+
+  it("removes only one copy when the local side deleted one of two", () => {
+    const base = "Buy milk\nBuy milk\n";
+    const local = "Buy milk\n";
+    const out = mergeTodoText(base, local, base);
+    expect(out.split("\n").filter(l => l.includes("Buy milk"))).toHaveLength(1);
+  });
+});

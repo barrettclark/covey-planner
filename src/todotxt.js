@@ -6,7 +6,7 @@
 // and tests can pin to any date without mocking.
 
 export function parseRecurrence(raw) {
-  const m = raw.match(/rec:(\d+)(d|w|m|y|wd)|rec:(daily|weekly|monthly|yearly|weekday)/i);
+  const m = raw.match(/rec:(\d+)(wd|d|w|m|y)|rec:(daily|weekly|monthly|yearly|weekday)/i);
   if (!m) return null;
   if (m[3]) {
     const map = { daily: "1d", weekly: "1w", monthly: "1m", yearly: "1y", weekday: "1wd" };
@@ -147,13 +147,24 @@ export function mergeTodoText(base, local, remote) {
       .split("\n")
       .filter(l => l.trim())
       .map(norm);
-  const baseLines = new Set(lines(base));
-  const localLines = new Set(lines(local));
-  const remoteLines = lines(remote);
-  const removed = new Set([...baseLines].filter(l => !localLines.has(l)));
-  const added = [...localLines].filter(l => !baseLines.has(l));
-  const kept = remoteLines.filter(l => !removed.has(l));
-  const merged = [...new Set([...kept, ...added])];
+  // Multiset diff: identical lines are distinct tasks, so count occurrences rather than dedupe.
+  const count = arr => arr.reduce((m, l) => m.set(l, (m.get(l) || 0) + 1), new Map());
+  const baseC = count(lines(base));
+  const localC = count(lines(local));
+  const toRemove = new Map();
+  for (const [l, b] of baseC) {
+    const drop = b - (localC.get(l) || 0);
+    if (drop > 0) toRemove.set(l, drop);
+  }
+  const merged = [];
+  for (const l of lines(remote)) {
+    if (toRemove.get(l) > 0) toRemove.set(l, toRemove.get(l) - 1);
+    else merged.push(l);
+  }
+  for (const [l, c] of localC) {
+    const add = c - (baseC.get(l) || 0);
+    for (let i = 0; i < add; i++) merged.push(l);
+  }
   return sortedTxt(merged.map((raw, i) => parseTodoTxt(raw, i + 1)));
 }
 
