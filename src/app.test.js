@@ -20,6 +20,8 @@ import {
   effectivePriority,
   dueSortKey,
   fmtDate,
+  localDateISO,
+  mergeTodoText,
 } from "./todotxt.js";
 
 let TODAY = new Date().toISOString().split("T")[0];
@@ -50,7 +52,7 @@ describe("advanceDate", () => {
     expect(advanceDate("2026-01-01", "1w")).toBe("2026-01-08");
   });
   it("advances by months", () => {
-    expect(advanceDate("2026-01-31", "1m")).toBe("2026-03-03"); // Jan 31 + 1m overflows Feb → Mar 3 (JS Date behavior)
+    expect(advanceDate("2026-01-31", "1m")).toBe("2026-02-28"); // clamped, not overflowed to Mar 3
   });
   it("advances by years", () => {
     expect(advanceDate("2026-03-01", "1y")).toBe("2027-03-01");
@@ -419,7 +421,7 @@ describe("TODAY midnight refresh", () => {
 
   it("getToday() matches the current date", () => {
     const d = new Date();
-    const expected = d.toISOString().split("T")[0];
+    const expected = localDateISO(d);
     // Allow 1-second tolerance in case test runs right at midnight
     const actual = getToday();
     expect(actual === expected || actual === advanceDate(expected, "1d")).toBe(true);
@@ -731,5 +733,124 @@ describe("isVisibleToday", () => {
   it("R task with no due date is hidden (effectivePriority → R, not A or B)", () => {
     const t = parseTodoTxt("(R) Undated recurring rec:1w", 1);
     expect(isVisibleToday(t)).toBe(false);
+  });
+});
+
+// ── Local date and three-way merge ────────────────────────────────────────────
+describe("localDateISO", () => {
+  it("uses the local calendar day, not the UTC day, late in the evening", () => {
+    // Built from local components so the assertion holds in any TZ.
+    expect(localDateISO(new Date(2026, 0, 15, 20, 30))).toBe("2026-01-15");
+    expect(localDateISO(new Date(2026, 0, 15, 23, 59))).toBe("2026-01-15");
+  });
+
+  it("zero-pads month and day", () => {
+    expect(localDateISO(new Date(2026, 8, 3, 9, 0))).toBe("2026-09-03");
+  });
+});
+
+describe("mergeTodoText", () => {
+  const base = "(A) Write report\nBuy milk\nCall dentist\n";
+
+  it("keeps remote additions and local additions", () => {
+    const local = base + "Local idea\n";
+    const remote = base + "Remote task\n";
+    const out = mergeTodoText(base, local, remote);
+    expect(out).toContain("Local idea");
+    expect(out).toContain("Remote task");
+    expect(out).toContain("Buy milk");
+  });
+
+  it("does not resurrect a task deleted locally", () => {
+    const local = "(A) Write report\nCall dentist\n";
+    const remote = base;
+    expect(mergeTodoText(base, local, remote)).not.toContain("Buy milk");
+  });
+
+  it("replaces a locally completed task instead of duplicating it", () => {
+    const local = "x 2026-01-15 (A) Write report\nBuy milk\nCall dentist\n";
+    const out = mergeTodoText(base, local, base);
+    expect(out.split("\n").filter(l => l.includes("Write report"))).toHaveLength(1);
+    expect(out).toContain("x 2026-01-15");
+  });
+
+  it("keeps a remote edit to a line the local side did not touch", () => {
+    const remote = "(A) Write report\nBuy oat milk\nCall dentist\n";
+    const out = mergeTodoText(base, base + "New\n", remote);
+    expect(out).toContain("Buy oat milk");
+    expect(out).not.toContain("Buy milk");
+  });
+
+  it("ignores formatting-only differences between clients", () => {
+    const remote = "(A) Write report\nBuy milk   \nCall dentist\n";
+    const out = mergeTodoText(base, base, remote);
+    expect(out.split("\n").filter(l => l.includes("Buy milk"))).toHaveLength(1);
+  });
+});
+
+describe("advanceDate", () => {
+  it("parses weekday recurrence as weekdays, not weeks", () => {
+    // 2026-10-02 is a Friday; +1wd should skip the weekend to Monday.
+    expect(advanceDate("2026-10-02", "1wd")).toBe("2026-10-05");
+  });
+
+  it("clamps monthly recurrence to the last day of the target month", () => {
+    expect(advanceDate("2026-01-31", "1m")).toBe("2026-02-28");
+    expect(advanceDate("2024-01-31", "1m")).toBe("2024-02-29");
+    expect(advanceDate("2026-03-15", "1m")).toBe("2026-04-15");
+  });
+});
+
+describe("recurrence through parseTodoTxt", () => {
+  it("parses rec:Nwd as weekdays, not weeks", () => {
+    expect(parseTodoTxt("Stand up rec:1wd", 1).recurrence).toBe("1wd");
+  });
+
+  it("parses rec:Nw as weeks", () => {
+    expect(parseTodoTxt("Review rec:2w", 1).recurrence).toBe("2w");
+  });
+});
+
+describe("mergeTodoText duplicates", () => {
+  it("keeps two identical tasks when neither side changed", () => {
+    const base = "Buy milk\nBuy milk\n";
+    const out = mergeTodoText(base, base, base);
+    expect(out.split("\n").filter(l => l.includes("Buy milk"))).toHaveLength(2);
+  });
+
+  it("removes only one copy when the local side deleted one of two", () => {
+    const base = "Buy milk\nBuy milk\n";
+    const local = "Buy milk\n";
+    const out = mergeTodoText(base, local, base);
+    expect(out.split("\n").filter(l => l.includes("Buy milk"))).toHaveLength(1);
+  });
+});
+
+describe("mergeTodoText identity and conflicts", () => {
+  const base = "Buy milk seq:1\nCall dentist seq:2\n";
+
+  it("treats a remote rename as an edit of the same task, not a new one", () => {
+    const remote = "Buy oat milk seq:1\nCall dentist seq:2\n";
+    const out = mergeTodoText(base, base, remote);
+    expect(out.split("\n").filter(l => l.includes("seq:1"))).toEqual(["Buy oat milk seq:1"]);
+  });
+
+  it("delete-vs-edit keeps the edit", () => {
+    const local = "Call dentist seq:2\n";
+    const remote = "Buy oat milk seq:1\nCall dentist seq:2\n";
+    expect(mergeTodoText(base, local, remote)).toContain("Buy oat milk seq:1");
+  });
+
+  it("delete-vs-untouched honors the delete", () => {
+    const local = "Call dentist seq:2\n";
+    expect(mergeTodoText(base, local, base)).not.toContain("Buy milk");
+  });
+
+  it("edit-vs-edit keeps the local version", () => {
+    const local = "Buy almond milk seq:1\nCall dentist seq:2\n";
+    const remote = "Buy oat milk seq:1\nCall dentist seq:2\n";
+    const out = mergeTodoText(base, local, remote);
+    expect(out).toContain("Buy almond milk seq:1");
+    expect(out).not.toContain("Buy oat milk");
   });
 });

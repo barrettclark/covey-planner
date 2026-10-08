@@ -6,7 +6,7 @@
 // and tests can pin to any date without mocking.
 
 export function parseRecurrence(raw) {
-  const m = raw.match(/rec:(\d+)(d|w|m|y|wd)|rec:(daily|weekly|monthly|yearly|weekday)/i);
+  const m = raw.match(/rec:(\d+)(wd|d|w|m|y)|rec:(daily|weekly|monthly|yearly|weekday)/i);
   if (!m) return null;
   if (m[3]) {
     const map = { daily: "1d", weekly: "1w", monthly: "1m", yearly: "1y", weekday: "1wd" };
@@ -81,7 +81,7 @@ export function parseTodoTxt(raw, id) {
 }
 
 export function taskToTxt(task) {
-  let line = task.done ? `x ${task.completedDate || new Date().toISOString().split("T")[0]} ` : "";
+  let line = task.done ? `x ${task.completedDate || localDateISO()} ` : "";
   if (task.done) {
     const cleanedText = task.cleanText
       .replace(/\bpri:[A-Z]\b/g, "")
@@ -131,20 +131,77 @@ export function sortedTxt(tasks) {
   );
 }
 
+// Local calendar date as YYYY-MM-DD. toISOString() is UTC and rolls over early for US evenings.
+export function localDateISO(d = new Date()) {
+  const pad = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+// Three-way merge keyed by task identity: the seq: tag when present, otherwise the
+// line text plus its occurrence index. Delete-vs-edit keeps the edit; edit-vs-edit keeps local.
+export function mergeTodoText(base, local, remote) {
+  // Re-serialize each line so formatting differences between clients don't count as edits.
+  const norm = l => taskToTxt(parseTodoTxt(l, 0)).trim();
+  const lines = t =>
+    t
+      .split("\n")
+      .filter(l => l.trim())
+      .map(norm);
+  const keyed = arr => {
+    const seen = new Map();
+    return new Map(
+      arr.map(l => {
+        const seq = (l.match(/\bseq:(\d+)\b/) || [])[1];
+        if (seq) return [`s:${seq}`, l];
+        const n = seen.get(l) || 0;
+        seen.set(l, n + 1);
+        return [`t:${l}#${n}`, l];
+      }),
+    );
+  };
+  const B = keyed(lines(base));
+  const L = keyed(lines(local));
+  const R = keyed(lines(remote));
+  const out = [];
+  for (const [k, baseLine] of B) {
+    const l = L.get(k);
+    const r = R.get(k);
+    const localEdited = l !== undefined && l !== baseLine;
+    const remoteEdited = r !== undefined && r !== baseLine;
+    if (l === undefined && r === undefined) continue;
+    if (l === undefined) {
+      // Deleted locally: keep the remote version only if it was edited.
+      if (remoteEdited) out.push(r);
+    } else if (r === undefined) {
+      if (localEdited) out.push(l);
+    } else {
+      out.push(localEdited ? l : r);
+    }
+  }
+  for (const [k, l] of L) if (!B.has(k)) out.push(l);
+  for (const [k, r] of R) if (!B.has(k)) out.push(r);
+  return sortedTxt(out.map((raw, i) => parseTodoTxt(raw, i + 1)));
+}
+
 export function getToday() {
-  return new Date().toISOString().split("T")[0];
+  return localDateISO();
 }
 
 export function advanceDate(from, rec) {
   const d = new Date(from + "T12:00:00");
-  const m = rec.match(/^(\d+)(d|w|m|y|wd)$/);
+  const m = rec.match(/^(\d+)(wd|d|w|m|y)$/);
   if (!m) return from;
   const n = parseInt(m[1]),
     u = m[2];
   if (u === "d") d.setDate(d.getDate() + n);
   else if (u === "w") d.setDate(d.getDate() + n * 7);
-  else if (u === "m") d.setMonth(d.getMonth() + n);
-  else if (u === "y") d.setFullYear(d.getFullYear() + n);
+  else if (u === "m") {
+    // Clamp so Jan 31 +1m lands on Feb 28, not Mar 3.
+    const day = d.getDate();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + n);
+    d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+  } else if (u === "y") d.setFullYear(d.getFullYear() + n);
   else if (u === "wd") {
     let a = 0;
     while (a < n) {
@@ -152,14 +209,14 @@ export function advanceDate(from, rec) {
       if (d.getDay() !== 0 && d.getDay() !== 6) a++;
     }
   }
-  return d.toISOString().split("T")[0];
+  return localDateISO(d);
 }
 
 export function weekDates() {
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date();
     d.setDate(d.getDate() + i);
-    return d.toISOString().split("T")[0];
+    return localDateISO(d);
   });
 }
 
