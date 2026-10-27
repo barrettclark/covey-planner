@@ -104,6 +104,158 @@ export function useTaskManager() {
   const [planStep, setPlanStep] = useState(0);
   const [planRolloverIds, setPlanRolloverIds] = useState([]);
 
+  // ── Flash messages ────────────────────────────────────────────────────────────
+  const flash = useCallback(msg => {
+    setSaveMsg(msg);
+    setTimeout(() => setSaveMsg(null), 2500);
+  }, []);
+
+  // ── Undo ─────────────────────────────────────────────────────────────────────
+  const pushUndo = useCallback((prevTasks, msg) => {
+    setUndoStack(s => [...s.slice(-9), { tasks: prevTasks, msg }]);
+    clearTimeout(undoTimerRef.current);
+    const key = Date.now();
+    setUndoToast({ msg, key });
+    undoTimerRef.current = setTimeout(() => setUndoToast(t => (t?.key === key ? null : t)), 5000);
+  }, []);
+
+  // ── Poll pause: suspend longpoll while editing ───────────────────────────────
+  const isEditing = editingId !== null || addingFor !== null;
+  const isEditingRef = useRef(isEditing);
+  useEffect(() => {
+    isEditingRef.current = isEditing;
+  }, [isEditing]);
+
+  const saveTimer = useRef(null);
+  const lastSavedAt = useRef(0);
+  const pollCursor = useRef(null);
+  // Track the Dropbox file revision so uploads can use mode:'update' instead
+  // of mode:'overwrite'.  null means "unknown — use overwrite on first write".
+  const currentRev = useRef(null);
+  // Content both sides last agreed on: base for three-way merges and skip for no-op saves.
+  const lastSyncedText = useRef(null);
+  // True from a queued save until its upload settles; reloads must not clobber those edits.
+  const pendingSaveRef = useRef(false);
+  // A remote change was seen but not yet loaded; retried once editing and saving are idle.
+  const remoteChangedRef = useRef(false);
+  const tasksRef = useRef(null);
+
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
+
+  const loadFromDropbox = useCallback(async () => {
+    if (pendingSaveRef.current) {
+      remoteChangedRef.current = true;
+      return;
+    }
+    setDbxStatus("loading");
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        setDbxConnected(false);
+        setDbxStatus(null);
+        return;
+      }
+      const { text, rev } = await dbxDownload(token);
+      if (pendingSaveRef.current || isEditingRef.current) {
+        remoteChangedRef.current = true;
+        return;
+      }
+      if (rev) currentRev.current = rev;
+      const parsed = text
+        .split("\n")
+        .filter(l => l.trim())
+        .map((raw, i) => parseTodoTxt(raw, i + 1));
+      lastSyncedText.current = sortedTxt(parsed);
+      remoteChangedRef.current = false;
+      setTasks(parsed);
+      nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
+      setDbxStatus("saved");
+      flash("✓ Loaded from Dropbox");
+    } catch (e) {
+      setDbxStatus("error");
+      flash("⚠ Dropbox load failed");
+      console.error(e);
+    }
+  }, [flash]);
+
+  const saveToDropbox = useCallback(
+    async (taskList, { keepalive = false } = {}) => {
+      const content = sortedTxt(taskList);
+      let settled = false;
+      try {
+        if (content === lastSyncedText.current) {
+          settled = true;
+          return;
+        }
+        const token = await getAccessToken();
+        if (!token) {
+          settled = true;
+          setDbxConnected(false);
+          setDbxStatus(null);
+          return;
+        }
+        setDbxStatus("saving");
+        try {
+          const { rev: newRev } = await dbxUpload(token, content, currentRev.current, {
+            keepalive,
+          });
+          if (newRev) currentRev.current = newRev;
+          lastSyncedText.current = content;
+          lastSavedAt.current = Date.now();
+          settled = true;
+          try {
+            const freshToken = await getAccessToken();
+            if (freshToken) pollCursor.current = await dbxGetCursor(freshToken);
+          } catch {}
+          setDbxStatus("saved");
+        } catch (e) {
+          if (!(e instanceof DropboxConflictError)) throw e;
+          // Another client wrote since our last rev: merge against the last synced base and retry.
+          const freshToken = await getAccessToken();
+          if (!freshToken) {
+            settled = true;
+            setDbxConnected(false);
+            setDbxStatus(null);
+            return;
+          }
+          const { text: remoteText, rev: remoteRev } = await dbxDownload(freshToken);
+          const merged = mergeTodoText(lastSyncedText.current ?? "", content, remoteText);
+          const { rev: afterMergeRev } = await dbxUpload(
+            freshToken,
+            merged,
+            remoteRev ?? currentRev.current,
+          );
+          if (afterMergeRev) currentRev.current = afterMergeRev;
+          lastSyncedText.current = merged;
+          lastSavedAt.current = Date.now();
+          settled = true;
+          // Fold in edits made while the merge was in flight; the next save uploads them.
+          const latest = sortedTxt(tasksRef.current);
+          const next = mergeTodoText(content, latest, merged);
+          const parsed = next
+            .split("\n")
+            .filter(l => l.trim())
+            .map((raw, i) => parseTodoTxt(raw, i + 1));
+          setTasks(parsed);
+          nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
+          setDbxStatus("saved");
+          flash("✓ Merged with remote changes");
+        }
+      } catch (e) {
+        setDbxStatus("error");
+        console.error("Dropbox save error:", e);
+        // Keep the unsaved-work guard up and try again rather than let a reload overwrite the edit.
+        // Never keepalive here: this timer only runs while the page is alive.
+        saveTimer.current = setTimeout(() => saveToDropbox(tasksRef.current), 10000);
+      } finally {
+        if (settled && tasksRef.current === taskList) pendingSaveRef.current = false;
+      }
+    },
+    [flash],
+  );
+
   // ── Keep TODAY in sync across midnight and tab focus ────────────────────────
   useEffect(() => {
     function refresh() {
@@ -131,14 +283,7 @@ export function useTaskManager() {
       document.removeEventListener("visibilitychange", handleVisible);
       window.removeEventListener("focus", handleVisible);
     };
-  }, [dbxConnected]);
-
-  // ── Poll pause: suspend longpoll while editing ───────────────────────────────
-  const isEditing = editingId !== null || addingFor !== null;
-  const isEditingRef = useRef(isEditing);
-  useEffect(() => {
-    isEditingRef.current = isEditing;
-  }, [isEditing]);
+  }, [dbxConnected, loadFromDropbox]);
 
   // ── App badge ───────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -177,136 +322,11 @@ export function useTaskManager() {
         setDbxStatus("error");
         console.error("Dropbox auth error:", e);
       });
-  }, []);
+  }, [loadFromDropbox]);
 
   useEffect(() => {
     if (dbxConnected) loadFromDropbox();
-  }, [dbxConnected]);
-
-  const saveTimer = useRef(null);
-  const lastSavedAt = useRef(0);
-  const pollCursor = useRef(null);
-  // Track the Dropbox file revision so uploads can use mode:'update' instead
-  // of mode:'overwrite'.  null means "unknown — use overwrite on first write".
-  const currentRev = useRef(null);
-  // Content both sides last agreed on: base for three-way merges and skip for no-op saves.
-  const lastSyncedText = useRef(null);
-  // True from a queued save until its upload settles; reloads must not clobber those edits.
-  const pendingSaveRef = useRef(false);
-  // A remote change was seen but not yet loaded; retried once editing and saving are idle.
-  const remoteChangedRef = useRef(false);
-  const tasksRef = useRef(null);
-
-  useEffect(() => {
-    tasksRef.current = tasks;
-  }, [tasks]);
-
-  async function loadFromDropbox() {
-    if (pendingSaveRef.current) {
-      remoteChangedRef.current = true;
-      return;
-    }
-    setDbxStatus("loading");
-    try {
-      const token = await getAccessToken();
-      if (!token) {
-        setDbxConnected(false);
-        setDbxStatus(null);
-        return;
-      }
-      const { text, rev } = await dbxDownload(token);
-      if (pendingSaveRef.current || isEditingRef.current) {
-        remoteChangedRef.current = true;
-        return;
-      }
-      if (rev) currentRev.current = rev;
-      const parsed = text
-        .split("\n")
-        .filter(l => l.trim())
-        .map((raw, i) => parseTodoTxt(raw, i + 1));
-      lastSyncedText.current = sortedTxt(parsed);
-      remoteChangedRef.current = false;
-      setTasks(parsed);
-      nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
-      setDbxStatus("saved");
-      flash("✓ Loaded from Dropbox");
-    } catch (e) {
-      setDbxStatus("error");
-      flash("⚠ Dropbox load failed");
-      console.error(e);
-    }
-  }
-
-  const saveToDropbox = useCallback(async (taskList, { keepalive = false } = {}) => {
-    const content = sortedTxt(taskList);
-    let settled = false;
-    try {
-      if (content === lastSyncedText.current) {
-        settled = true;
-        return;
-      }
-      const token = await getAccessToken();
-      if (!token) {
-        settled = true;
-        setDbxConnected(false);
-        setDbxStatus(null);
-        return;
-      }
-      setDbxStatus("saving");
-      try {
-        const { rev: newRev } = await dbxUpload(token, content, currentRev.current, { keepalive });
-        if (newRev) currentRev.current = newRev;
-        lastSyncedText.current = content;
-        lastSavedAt.current = Date.now();
-        settled = true;
-        try {
-          const freshToken = await getAccessToken();
-          if (freshToken) pollCursor.current = await dbxGetCursor(freshToken);
-        } catch {}
-        setDbxStatus("saved");
-      } catch (e) {
-        if (!(e instanceof DropboxConflictError)) throw e;
-        // Another client wrote since our last rev: merge against the last synced base and retry.
-        const freshToken = await getAccessToken();
-        if (!freshToken) {
-          settled = true;
-          setDbxConnected(false);
-          setDbxStatus(null);
-          return;
-        }
-        const { text: remoteText, rev: remoteRev } = await dbxDownload(freshToken);
-        const merged = mergeTodoText(lastSyncedText.current ?? "", content, remoteText);
-        const { rev: afterMergeRev } = await dbxUpload(
-          freshToken,
-          merged,
-          remoteRev ?? currentRev.current,
-        );
-        if (afterMergeRev) currentRev.current = afterMergeRev;
-        lastSyncedText.current = merged;
-        lastSavedAt.current = Date.now();
-        settled = true;
-        // Fold in edits made while the merge was in flight; the next save uploads them.
-        const latest = sortedTxt(tasksRef.current);
-        const next = mergeTodoText(content, latest, merged);
-        const parsed = next
-          .split("\n")
-          .filter(l => l.trim())
-          .map((raw, i) => parseTodoTxt(raw, i + 1));
-        setTasks(parsed);
-        nextId.current = Math.max(0, ...parsed.map(t => t.id)) + 1;
-        setDbxStatus("saved");
-        flash("✓ Merged with remote changes");
-      }
-    } catch (e) {
-      setDbxStatus("error");
-      console.error("Dropbox save error:", e);
-      // Keep the unsaved-work guard up and try again rather than let a reload overwrite the edit.
-      // Never keepalive here: this timer only runs while the page is alive.
-      saveTimer.current = setTimeout(() => saveToDropbox(tasksRef.current), 10000);
-    } finally {
-      if (settled && tasksRef.current === taskList) pendingSaveRef.current = false;
-    }
-  }, []);
+  }, [dbxConnected, loadFromDropbox]);
 
   // Forget the last-synced base on disconnect so a reconnect can't autosave stale state first.
   useEffect(() => {
@@ -324,7 +344,7 @@ export function useTaskManager() {
       clearTimeout(saveTimer.current);
       pendingSaveRef.current = false;
     };
-  }, [tasks, dbxConnected]);
+  }, [tasks, dbxConnected, saveToDropbox]);
 
   // Best-effort: push a queued save out before the page is torn down.
   useEffect(() => {
@@ -343,7 +363,7 @@ export function useTaskManager() {
       window.removeEventListener("pagehide", flush);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [dbxConnected]);
+  }, [dbxConnected, saveToDropbox]);
 
   // ── Dropbox longpoll ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -393,7 +413,7 @@ export function useTaskManager() {
       cancelled = true;
       pollCursor.current = null;
     };
-  }, [dbxConnected]);
+  }, [dbxConnected, loadFromDropbox]);
 
   // ── File I/O ─────────────────────────────────────────────────────────────────
   async function openFile() {
@@ -447,21 +467,6 @@ export function useTaskManager() {
     setDbxStatus(null);
   }
 
-  // ── Flash messages ────────────────────────────────────────────────────────────
-  function flash(msg) {
-    setSaveMsg(msg);
-    setTimeout(() => setSaveMsg(null), 2500);
-  }
-
-  // ── Undo ─────────────────────────────────────────────────────────────────────
-  function pushUndo(prevTasks, msg) {
-    setUndoStack(s => [...s.slice(-9), { tasks: prevTasks, msg }]);
-    clearTimeout(undoTimerRef.current);
-    const key = Date.now();
-    setUndoToast({ msg, key });
-    undoTimerRef.current = setTimeout(() => setUndoToast(t => (t?.key === key ? null : t)), 5000);
-  }
-
   function doUndo() {
     setUndoStack(s => {
       if (!s.length) return s;
@@ -474,32 +479,38 @@ export function useTaskManager() {
   }
 
   // ── Task mutations ────────────────────────────────────────────────────────────
-  function toggleDone(id) {
-    setTasks(prev => {
-      const task = prev.find(t => t.id === id);
-      if (!task) return prev;
-      pushUndo(prev, task.done ? `Reopened: ${task.cleanText}` : `Completed: ${task.cleanText}`);
-      if (!task.done && task.recurrence) {
-        const nid = nextId.current++;
-        const nextDue = advanceDate(task.dueDate || TODAY, task.recurrence);
-        const next = { ...task, id: nid, done: false, completedDate: null, dueDate: nextDue };
-        return prev
-          .map(t => (t.id === id ? { ...t, done: true, completedDate: TODAY } : t))
-          .concat(next);
-      }
-      return prev.map(t =>
-        t.id === id ? { ...t, done: !t.done, completedDate: !t.done ? TODAY : null } : t,
-      );
-    });
-  }
+  const toggleDone = useCallback(
+    id => {
+      setTasks(prev => {
+        const task = prev.find(t => t.id === id);
+        if (!task) return prev;
+        pushUndo(prev, task.done ? `Reopened: ${task.cleanText}` : `Completed: ${task.cleanText}`);
+        if (!task.done && task.recurrence) {
+          const nid = nextId.current++;
+          const nextDue = advanceDate(task.dueDate || TODAY, task.recurrence);
+          const next = { ...task, id: nid, done: false, completedDate: null, dueDate: nextDue };
+          return prev
+            .map(t => (t.id === id ? { ...t, done: true, completedDate: TODAY } : t))
+            .concat(next);
+        }
+        return prev.map(t =>
+          t.id === id ? { ...t, done: !t.done, completedDate: !t.done ? TODAY : null } : t,
+        );
+      });
+    },
+    [pushUndo],
+  );
 
-  function deleteTask(id) {
-    setTasks(prev => {
-      const task = prev.find(t => t.id === id);
-      if (task) pushUndo(prev, `Deleted: ${task.cleanText}`);
-      return prev.filter(t => t.id !== id);
-    });
-  }
+  const deleteTask = useCallback(
+    id => {
+      setTasks(prev => {
+        const task = prev.find(t => t.id === id);
+        if (task) pushUndo(prev, `Deleted: ${task.cleanText}`);
+        return prev.filter(t => t.id !== id);
+      });
+    },
+    [pushUndo],
+  );
 
   function toggleInProgress(id) {
     setTasks(prev => prev.map(t => (t.id === id ? { ...t, inProgress: !t.inProgress } : t)));
@@ -572,9 +583,9 @@ export function useTaskManager() {
     setAddingFor(null);
   }
 
-  function changePriority(id, newPriority) {
+  const changePriority = useCallback((id, newPriority) => {
     setTasks(prev => prev.map(t => (t.id === id ? { ...t, priority: newPriority || null } : t)));
-  }
+  }, []);
 
   function promoteToDaily(id) {
     setTasks(prev =>

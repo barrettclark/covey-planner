@@ -27,14 +27,6 @@ export default defineConfig([
     rules: {
       "no-unused-vars": ["error", { varsIgnorePattern: "^[A-Z_]", argsIgnorePattern: "^_" }],
       "no-empty": ["error", { allowEmptyCatch: true }],
-      // HMR hint, not a correctness rule — components.jsx deliberately co-locates helpers.
-      "react-refresh/only-export-components": "warn",
-      // React Compiler rule; the compiler isn't enabled here and it false-positives
-      // on hoisted function references inside effects.
-      "react-hooks/immutability": "warn",
-      // New in react-hooks 7.1; one pre-existing hit (APOD cache read in App.jsx).
-      // Tracked for a real fix in #6.
-      "react-hooks/set-state-in-effect": "warn",
     },
   },
 ]);

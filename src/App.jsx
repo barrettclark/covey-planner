@@ -4,7 +4,6 @@ import { startDropboxAuth } from "./dropbox.js";
 import { useTaskManager } from "./useTaskManager.js";
 import { C, FONT_SERIF } from "./theme.js";
 import {
-  PMETA,
   DailyView,
   WeeklyView,
   UpcomingView,
@@ -15,10 +14,8 @@ import {
   HelpSection,
   HelpDivider,
   Code,
-  hp,
-  ul,
-  li,
 } from "./components.jsx";
+import { PMETA, hp, ul, li } from "./componentHelpers.jsx";
 
 const QUOTES = [
   {
@@ -162,6 +159,7 @@ export default function App() {
   const [focusedTaskId, setFocusedTaskId] = useState(null);
   const searchRef = useRef(null);
   const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const TODAY = mgr.TODAY();
 
   // ── Notification permission request (mobile) ────────────────────────────────
   useEffect(() => {
@@ -173,13 +171,12 @@ export default function App() {
       }, 3000);
       return () => clearTimeout(t);
     }
-  }, []);
+  }, [isMobile]);
 
   // ── NASA APOD ────────────────────────────────────────────────────────────────
   const [apod, setApod] = useState(null);
   const [apodError, setApodError] = useState(false);
   useEffect(() => {
-    const TODAY = mgr.TODAY();
     const cacheKey = `apod_${TODAY}`;
     const cached = localStorage.getItem(cacheKey);
     if (cached) {
@@ -221,7 +218,7 @@ export default function App() {
         }
       })
       .catch(() => setApodError(true));
-  }, []);
+  }, [TODAY]);
 
   // ── Derived views ────────────────────────────────────────────────────────────
   const q = searchQuery.trim().toLowerCase();
@@ -246,7 +243,6 @@ export default function App() {
     );
     return QUOTES[dayOfYear % QUOTES.length];
   }, []);
-  const TODAY = mgr.TODAY();
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -296,7 +292,22 @@ export default function App() {
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [focusedTaskId, orderedTasks, editingId, addingFor, searchQuery, planningMode, tasks]);
+  }, [
+    focusedTaskId,
+    orderedTasks,
+    editingId,
+    addingFor,
+    searchQuery,
+    planningMode,
+    tasks,
+    toggleDone,
+    deleteTask,
+    changePriority,
+    setAddingFor,
+    setEditingId,
+    setForm,
+    setPlanningMode,
+  ]);
 
   return (
     <div
