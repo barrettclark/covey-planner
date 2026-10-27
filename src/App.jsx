@@ -194,10 +194,25 @@ export default function App() {
   const displayApodError = apodFetched.day === TODAY && apodFetched.error;
   useEffect(() => {
     if (cachedApod) return;
+    // Ignore a request superseded by a newer one (e.g. the day rolled over
+    // while this one was still in flight) so it can't clobber fresher state.
+    let ignore = false;
+    const setResult = result => {
+      if (ignore) return;
+      setApodFetched(result);
+    };
+    // A cache-write failure (e.g. quota exceeded) shouldn't discard a photo
+    // that was already fetched successfully, so it's swallowed separately
+    // rather than left to propagate into the chain's final .catch().
+    const cacheResult = photo => {
+      try {
+        localStorage.setItem(apodCacheKey, JSON.stringify(photo));
+      } catch {}
+    };
     fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&date=${TODAY}`)
       .then(r => {
         if (r.status === 429) {
-          setApodFetched({ day: TODAY, photo: null, error: true });
+          setResult({ day: TODAY, photo: null, error: true });
           return null;
         }
         return r.json();
@@ -205,13 +220,13 @@ export default function App() {
       .then(data => {
         if (!data) return;
         if (data.media_type === "image") {
-          setApodFetched({ day: TODAY, photo: data, error: false });
-          localStorage.setItem(apodCacheKey, JSON.stringify(data));
+          setResult({ day: TODAY, photo: data, error: false });
+          cacheResult(data);
         } else {
           return fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&count=8`)
             .then(r => {
               if (r.status === 429) {
-                setApodFetched({ day: TODAY, photo: null, error: true });
+                setResult({ day: TODAY, photo: null, error: true });
                 return null;
               }
               return r.json();
@@ -220,13 +235,16 @@ export default function App() {
               if (!arr) return;
               const photo = arr.find(d => d.media_type === "image");
               if (photo) {
-                setApodFetched({ day: TODAY, photo, error: false });
-                localStorage.setItem(apodCacheKey, JSON.stringify(photo));
-              } else setApodFetched({ day: TODAY, photo: null, error: true });
+                setResult({ day: TODAY, photo, error: false });
+                cacheResult(photo);
+              } else setResult({ day: TODAY, photo: null, error: true });
             });
         }
       })
-      .catch(() => setApodFetched({ day: TODAY, photo: null, error: true }));
+      .catch(() => setResult({ day: TODAY, photo: null, error: true }));
+    return () => {
+      ignore = true;
+    };
   }, [TODAY, apodCacheKey, cachedApod]);
 
   // ── Derived views ────────────────────────────────────────────────────────────
