@@ -22,10 +22,10 @@ import { mini, PMETA, UPCOMING_META, highlight } from "./componentHelpers.jsx";
 //   allContexts    — string[] of known contexts for chip toggle
 
 export function TaskForm({
-  task,
+  task = null,
   meta,
-  form: externalForm,
-  setForm: setExternalForm,
+  form: externalForm = null,
+  setForm: setExternalForm = null,
   onSubmit,
   onCancel,
   submitLabel = "Save",
@@ -1110,6 +1110,9 @@ export function DailyView({
                 onDragStart={() => {}}
                 onDragOver={() => {}}
                 onDrop={() => {}}
+                onTouchDragStart={() => {}}
+                onTouchDragMove={() => {}}
+                onTouchDragEnd={() => {}}
                 allProjects={allProj}
                 allContexts={allCtx}
                 focusedTaskId={focusedTaskId}
@@ -1615,7 +1618,9 @@ export function UpcomingView({
             });
             return Object.entries(byDate).map(([threshDate, dateTasks]) => {
               const daysUntil = Math.ceil(
-                (new Date(threshDate + "T12:00:00") - new Date(TODAY + "T12:00:00")) / 86400000,
+                (new Date(threshDate + "T12:00:00").getTime() -
+                  new Date(TODAY + "T12:00:00").getTime()) /
+                  86400000,
               );
               const label =
                 daysUntil === 1 ? "tomorrow" : `in ${daysUntil} day${daysUntil !== 1 ? "s" : ""}`;

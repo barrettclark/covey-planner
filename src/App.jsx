@@ -266,7 +266,7 @@ export default function App() {
   );
   const todayQuote = useMemo(() => {
     const dayOfYear = Math.floor(
-      (new Date() - new Date(new Date().getFullYear(), 0, 0)) / 86400000,
+      (new Date().getTime() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000,
     );
     return QUOTES[dayOfYear % QUOTES.length];
   }, []);
