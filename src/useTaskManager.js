@@ -325,7 +325,10 @@ export function useTaskManager() {
   }, [loadFromDropbox]);
 
   useEffect(() => {
-    if (dbxConnected) loadFromDropbox();
+    if (!dbxConnected) return;
+    // Deferred: loadFromDropbox's first statement is a setState call, which
+    // must not run synchronously within the effect body.
+    queueMicrotask(loadFromDropbox);
   }, [dbxConnected, loadFromDropbox]);
 
   // Forget the last-synced base on disconnect so a reconnect can't autosave stale state first.

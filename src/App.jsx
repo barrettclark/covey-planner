@@ -174,17 +174,23 @@ export default function App() {
   }, [isMobile]);
 
   // ── NASA APOD ────────────────────────────────────────────────────────────────
+  // Cache read is a pure, synchronous derivation from TODAY — computed during
+  // render (not inside the effect) so the effect never calls setState directly.
+  const apodCacheKey = `apod_${TODAY}`;
+  const cachedApod = useMemo(() => {
+    const cached = localStorage.getItem(apodCacheKey);
+    if (!cached) return null;
+    try {
+      return JSON.parse(cached);
+    } catch {
+      return null;
+    }
+  }, [apodCacheKey]);
   const [apod, setApod] = useState(null);
   const [apodError, setApodError] = useState(false);
+  const displayApod = apod || cachedApod;
   useEffect(() => {
-    const cacheKey = `apod_${TODAY}`;
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) {
-      try {
-        setApod(JSON.parse(cached));
-        return;
-      } catch {}
-    }
+    if (cachedApod) return;
     fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&date=${TODAY}`)
       .then(r => {
         if (r.status === 429) {
@@ -197,7 +203,7 @@ export default function App() {
         if (!data) return;
         if (data.media_type === "image") {
           setApod(data);
-          localStorage.setItem(cacheKey, JSON.stringify(data));
+          localStorage.setItem(apodCacheKey, JSON.stringify(data));
         } else {
           return fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&count=8`)
             .then(r => {
@@ -212,13 +218,13 @@ export default function App() {
               const photo = arr.find(d => d.media_type === "image");
               if (photo) {
                 setApod(photo);
-                localStorage.setItem(cacheKey, JSON.stringify(photo));
+                localStorage.setItem(apodCacheKey, JSON.stringify(photo));
               } else setApodError(true);
             });
         }
       })
       .catch(() => setApodError(true));
-  }, [TODAY]);
+  }, [TODAY, apodCacheKey, cachedApod]);
 
   // ── Derived views ────────────────────────────────────────────────────────────
   const q = searchQuery.trim().toLowerCase();
@@ -887,11 +893,11 @@ export default function App() {
 
         {/* ── NASA APOD panel ── */}
         <div className="photo-col" style={{ background: "#111" }}>
-          {apod ? (
+          {displayApod ? (
             <>
               <img
-                src={apod.url}
-                alt={apod.title}
+                src={displayApod.url}
+                alt={displayApod.title}
                 style={{
                   width: "100%",
                   height: "72vh",
@@ -928,19 +934,19 @@ export default function App() {
                     marginBottom: 8,
                   }}
                 >
-                  {apod.title}
+                  {displayApod.title}
                 </div>
-                {apod.copyright && (
+                {displayApod.copyright && (
                   <div style={{ fontSize: 10, color: "#a89878" }}>
-                    © {apod.copyright.replace("\n", " ")}
+                    © {displayApod.copyright.replace("\n", " ")}
                   </div>
                 )}
                 <div style={{ fontSize: 11, color: "#9a8a70", marginTop: 8, lineHeight: 1.6 }}>
-                  {apod.explanation?.slice(0, 200)}
-                  {apod.explanation?.length > 200 ? "…" : ""}
+                  {displayApod.explanation?.slice(0, 200)}
+                  {displayApod.explanation?.length > 200 ? "…" : ""}
                 </div>
                 <a
-                  href={apod.hdurl || apod.url}
+                  href={displayApod.hdurl || displayApod.url}
                   target="_blank"
                   rel="noreferrer"
                   style={{
