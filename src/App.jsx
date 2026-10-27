@@ -186,15 +186,18 @@ export default function App() {
       return null;
     }
   }, [apodCacheKey]);
-  const [apod, setApod] = useState(null);
-  const [apodError, setApodError] = useState(false);
-  const displayApod = apod || cachedApod;
+  // Fetched result is tagged with the day it was fetched for, so a stale
+  // prior-day photo/error can't leak into `displayApod`/`displayError` once
+  // the day rolls over and `cachedApod` goes null for the new day.
+  const [apodFetched, setApodFetched] = useState({ day: TODAY, photo: null, error: false });
+  const displayApod = apodFetched.day === TODAY ? apodFetched.photo || cachedApod : cachedApod;
+  const displayApodError = apodFetched.day === TODAY && apodFetched.error;
   useEffect(() => {
     if (cachedApod) return;
     fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&date=${TODAY}`)
       .then(r => {
         if (r.status === 429) {
-          setApodError(true);
+          setApodFetched({ day: TODAY, photo: null, error: true });
           return null;
         }
         return r.json();
@@ -202,13 +205,13 @@ export default function App() {
       .then(data => {
         if (!data) return;
         if (data.media_type === "image") {
-          setApod(data);
+          setApodFetched({ day: TODAY, photo: data, error: false });
           localStorage.setItem(apodCacheKey, JSON.stringify(data));
         } else {
           return fetch(`https://api.nasa.gov/planetary/apod?api_key=DEMO_KEY&count=8`)
             .then(r => {
               if (r.status === 429) {
-                setApodError(true);
+                setApodFetched({ day: TODAY, photo: null, error: true });
                 return null;
               }
               return r.json();
@@ -217,13 +220,13 @@ export default function App() {
               if (!arr) return;
               const photo = arr.find(d => d.media_type === "image");
               if (photo) {
-                setApod(photo);
+                setApodFetched({ day: TODAY, photo, error: false });
                 localStorage.setItem(apodCacheKey, JSON.stringify(photo));
-              } else setApodError(true);
+              } else setApodFetched({ day: TODAY, photo: null, error: true });
             });
         }
       })
-      .catch(() => setApodError(true));
+      .catch(() => setApodFetched({ day: TODAY, photo: null, error: true }));
   }, [TODAY, apodCacheKey, cachedApod]);
 
   // ── Derived views ────────────────────────────────────────────────────────────
@@ -963,7 +966,7 @@ export default function App() {
                 </a>
               </div>
             </>
-          ) : apodError ? (
+          ) : displayApodError ? (
             <div
               style={{
                 height: "100%",
