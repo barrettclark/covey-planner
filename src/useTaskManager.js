@@ -263,7 +263,8 @@ export function useTaskManager() {
     }
     function scheduleMidnight() {
       const now = new Date();
-      const msUntilMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1) - now;
+      const msUntilMidnight =
+        new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - now.getTime();
       return setTimeout(() => {
         refresh();
         scheduleMidnight();
@@ -619,7 +620,9 @@ export function useTaskManager() {
 
   function handleTouchDragMove(e) {
     const touch = e.touches[0];
-    const el = document.elementFromPoint(touch.clientX, touch.clientY);
+    const el = /** @type {HTMLElement | null} */ (
+      document.elementFromPoint(touch.clientX, touch.clientY)
+    );
     if (!el) return;
     let node = el;
     let foundTaskId = null,
@@ -633,7 +636,7 @@ export function useTaskManager() {
         foundGroup = node.dataset.group;
         break;
       }
-      node = node.parentElement;
+      node = /** @type {HTMLElement | null} */ (node.parentElement);
     }
     if (foundTaskId && foundTaskId !== touchDrag.current.id) {
       if (touchDrag.current.lastOverId !== foundTaskId) {

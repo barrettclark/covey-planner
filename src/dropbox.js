@@ -55,6 +55,13 @@ export async function exchangeCode(code) {
   return res.json();
 }
 
+export class InvalidGrantError extends Error {
+  constructor(body) {
+    super(body);
+    this.name = "InvalidGrantError";
+  }
+}
+
 async function refreshToken(refresh_token) {
   const res = await fetch(DBX_TOKEN_URL, {
     method: "POST",
@@ -67,10 +74,9 @@ async function refreshToken(refresh_token) {
   });
   if (!res.ok) {
     const body = await res.text();
-    const err = new Error(body);
     // Only a revoked grant means the user must reconnect; other failures are transient.
-    err.invalidGrant = res.status === 400 && body.includes("invalid_grant");
-    throw err;
+    if (res.status === 400 && body.includes("invalid_grant")) throw new InvalidGrantError(body);
+    throw new Error(body);
   }
   return res.json();
 }
@@ -100,7 +106,7 @@ export async function getAccessToken() {
       };
       saveTokens(tokens);
     } catch (e) {
-      if (e.invalidGrant) return null;
+      if (e instanceof InvalidGrantError) return null;
       throw e;
     }
   }
